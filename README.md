@@ -28,6 +28,12 @@
 
 Buyurtmalar guruhga keladi (Tasdiqlandi / Bekor qilindi tugmalari, #tasdiqlangan / #bekor_qilingan hashtaglari).
 
+## Tillar
+
+Mijoz birinchi /start da tilni tanlaydi (o'zbekcha / ruscha), keyin /lang bilan o'zgartiradi.
+Mijoz matnlari: `texts.py` (kalit -> o'zbekcha, ruscha). Mahsulotning ruscha nomi admin panelda tahrirlanadi.
+Admin panel va guruh kartalari o'zbekcha (guruhda mijoz tili ko'rsatiladi).
+
 ## Fayllar
 
 - `bot.py` — bot; `db.py` — PostgreSQL; `prices.py` — nomlar, boshlang'ich narxlar, hisoblash formulasi (`python prices.py` → `ok`)

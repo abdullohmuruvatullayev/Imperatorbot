@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS products (
 );
 -- mavjud bazaga ham qo'shiladi
 ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_name TEXT;   -- buyurtmada kiritilgan ism-familiya
+ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT;            -- uz | ru
+ALTER TABLE products ADD COLUMN IF NOT EXISTS name_ru TEXT;      -- ruscha nomi
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS customer_name TEXT;
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS phone TEXT;
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS status TEXT;        -- NULL | new | confirmed | cancelled
@@ -70,6 +72,7 @@ CREATE INDEX IF NOT EXISTS calculations_created_at ON calculations(created_at);
 pool: asyncpg.Pool = None
 settings: dict = {}  # xotiradagi nusxa; bitta jarayon uchun yetarli
 products: dict = {}  # key -> dict, sort tartibida
+langs: dict = {}     # user_id -> 'uz' | 'ru' (keshi)
 
 
 async def init(dsn):
@@ -85,6 +88,9 @@ async def init(dsn):
         settings.update({r["key"]: r["value"] for r in await c.fetch("SELECT key, value FROM prices")})
         if not await c.fetchval("SELECT count(*) FROM products"):
             await seed_products(c)
+        # ruscha nomi yo'q (eski) mahsulotlarga boshlang'ich ruscha nom
+        await c.executemany("UPDATE products SET name_ru = $2 WHERE key = $1 AND name_ru IS NULL",
+                            list(P.NAMES_RU.items()))
     await load_products()
 
 
@@ -117,16 +123,16 @@ async def set_setting(key, value):
     settings[key] = value
 
 
-async def add_product(kind, name, price=None, file_id=None):
+async def add_product(kind, name, name_ru, price=None):
     key = f"{kind[0]}{secrets.token_hex(3)}"
-    await pool.execute("INSERT INTO products(key, kind, name, price, file_id) VALUES($1, $2, $3, $4, $5)",
-                       key, kind, name, price, file_id)
+    await pool.execute("INSERT INTO products(key, kind, name, name_ru, price) VALUES($1, $2, $3, $4, $5)",
+                       key, kind, name, name_ru, price)
     await load_products()
     return key
 
 
 async def update_product(key, field, value):
-    assert field in ("name", "price", "file_id", "hidden", "deleted")  # SQL'ga faqat shu nomlar tushadi
+    assert field in ("name", "name_ru", "price", "file_id", "hidden", "deleted")  # SQL'ga faqat shu nomlar tushadi
     await pool.execute(f"UPDATE products SET {field} = $2 WHERE key = $1", key, value)
     products[key][field] = value
 
@@ -136,6 +142,18 @@ async def upsert_user(u):
         """INSERT INTO users(id, username, full_name) VALUES($1, $2, $3)
            ON CONFLICT (id) DO UPDATE SET username = $2, full_name = $3, blocked = FALSE""",
         u.id, u.username, u.full_name)
+
+
+async def get_lang(user_id):
+    """Mijoz tanlagan til yoki None (hali tanlamagan)."""
+    if user_id not in langs:
+        langs[user_id] = await pool.fetchval("SELECT lang FROM users WHERE id = $1", user_id)
+    return langs[user_id]
+
+
+async def set_lang(user_id, lang):
+    await pool.execute("UPDATE users SET lang = $2 WHERE id = $1", user_id, lang)
+    langs[user_id] = lang
 
 
 async def save_user_contact(user_id, customer_name, phone):

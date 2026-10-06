@@ -19,6 +19,16 @@ SEED = {
     "fitting": [("blum", "Blum", 5.5), ("hettich", "Hettich", 5.5), ("xitoy", "Xitoy", 3), ("xitoy_dts", "Xitoy DTS", 3)],
 }
 
+# Ruscha nomlar (rus tilini tanlagan mijozlar uchun). Admin paneldan o'zgartiriladi.
+NAMES_RU = {
+    "peppil": "Пеппил", "yodiviy": "Йодовый", "prazrachniy": "Прозрачный",
+    "tosh": "Каменное стекло", "tosh_tillali": "Каменное стекло золотое", "tosh_peppili": "Каменное стекло пеппил",
+    "ref_prazrachniy": "Рифлёный прозрачный", "ref_yodiviy": "Рифлёный йодовый",
+    "ref_peppil": "Рифлёный пеппил", "ref_matoviy": "Рифлёный матовый", "lakabel": "Лакобель",
+    "qora": "Чёрный", "tilla_mat": "Золото матовое", "tilla_glyans": "Золото глянцевое", "shanpan": "Шампань серый",
+    "blum": "Blum", "hettich": "Hettich", "xitoy": "Китай", "xitoy_dts": "Китай DTS",
+}
+
 # Umumiy narx sozlamalari: kalit -> (nomi, birligi, boshlang'ich qiymat)
 SETTINGS = {
     "profile": ("Profil", "$/metr", 6),

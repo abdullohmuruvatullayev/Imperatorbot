@@ -21,6 +21,7 @@ from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, FSInput
 
 import db
 import prices as P
+from texts import TEXTS
 
 ROOT = Path(__file__).parent
 
@@ -82,9 +83,24 @@ def pe(ch):
 
 STEPS = 10  # eni, balandlik, soni, oyna, rang, furnitura, furnitura soni, ruchka, yetkazish, kontakt
 
+# Matndagi oddiy emojilarni premium emojiga aylantirish (uzunlari birinchi: ko'p belgili emoji bo'linmasin)
+_EMOJI_RE = re.compile("|".join(re.escape(k) + "\ufe0f?" for k in sorted(EMOJI, key=len, reverse=True)
+                                if k and not k.isascii()))
 
-def step(n):
-    return f"<i>Qadam {n}/{STEPS}</i>\n"
+
+def rich(text):
+    return _EMOJI_RE.sub(lambda m: f'<tg-emoji emoji-id="{EMOJI[m.group(0).replace(chr(0xFE0F), "")]}">'
+                                   f'{m.group(0)}</tg-emoji>', text)
+
+
+def t(lang, key, **kw):
+    """Mijoz tilidagi matn (texts.py). 'b_'/'a_' kalitlari — tugma/ogohlantirish: oddiy matn."""
+    text = TEXTS[key][lang == "ru"].format(line=LINE, max=P.MAX_MM, contact=CONTACT, total=STEPS, **kw)
+    return text if key.startswith(("b_", "a_")) else rich(text)
+
+
+def step(lang, n):
+    return t(lang, "step", n=n)
 
 
 def btn(text, data, style=None, icon=None):
@@ -140,9 +156,10 @@ def user_line(u):
     return f"@{u.username or '-'} ({html.escape(u.full_name)}, id {u.id})"
 
 
-def pname(key):
-    """Mahsulot nomi; o'chirilgan bo'lsa ham eski buyurtmalarda chiqadi."""
-    return db.products.get(key, {}).get("name", key)
+def pname(key, lang="uz"):
+    """Mahsulot nomi mijoz tilida; o'chirilgan bo'lsa ham eski buyurtmalarda chiqadi."""
+    p = db.products.get(key, {})
+    return (lang == "ru" and p.get("name_ru")) or p.get("name", key)
 
 
 def items(kind, admin=False):
@@ -215,6 +232,7 @@ class AdminForm(StatesGroup):
     edit = State()       # mahsulot nomi / narxi
     photo = State()      # mahsulot rasmi
     new_name = State()   # yangi mahsulot
+    new_name_ru = State()
     new_price = State()
     setting = State()    # umumiy narx
     broadcast = State()
@@ -391,7 +409,8 @@ def image_status(p):
 async def show_product(msg: Message, key, edit=True, notice=None):
     p = db.products[key]
     k = KINDS[p["kind"]]
-    lines = []
+    lines = [f"🇺🇿 Nomi (o'zbekcha): <b>{html.escape(p['name'])}</b>",
+             f"🇷🇺 Nomi (ruscha): <b>{html.escape(p['name_ru'] or '— yozilmagan')}</b>"]
     if k["unit"]:
         lines.append(f"💵 Narxi: <b>{price_str(p)}</b>")
     if k["image"]:
@@ -400,7 +419,8 @@ async def show_product(msg: Message, key, edit=True, notice=None):
                  else "👁 Holati: <b>mijozlarga ko'rinadi</b>")
     text = (notice_line(notice) + head([k["title"], p["name"]], f"{k['icon']} <b>{html.escape(p['name'])}</b>")
             + "\n".join(lines) + f"\n\nNimani o'zgartiramiz? {pe('👇')}")
-    markup = rows([("✏️ Nomini o'zgartirish", f"adm:e:name:{key}", "primary")],
+    markup = rows([("✏️ O'zbekcha nomini o'zgartirish", f"adm:e:name:{key}", "primary")],
+                  [("✏️ Ruscha nomini o'zgartirish", f"adm:e:name_ru:{key}", "primary")],
                   [("💵 Narxini o'zgartirish", f"adm:e:price:{key}", "primary")] if k["unit"] else None,
                   [("🖼 Rasmini almashtirish", f"adm:ph:{key}", "primary")] if k["image"] else None,
                   [("👁 Mijozlarga ko'rsatish" if p["hidden"] else "🙈 Mijozlardan yashirish", f"adm:hide:{key}")],
@@ -476,12 +496,15 @@ async def adm_delete_ok(cb: CallbackQuery):
 async def adm_edit(cb: CallbackQuery, state: FSMContext):
     _, _, field, key = cb.data.split(":")
     p = db.products.get(key)
-    if not p or field not in ("name", "price"):
+    if not p or field not in ("name", "name_ru", "price"):
         return await cb.answer()
     await cb.answer()
     k = KINDS[p["kind"]]
     if field == "name":
-        body = f"✏️ <b>Yangi nomni yozing</b>\nHozirgi: <b>{html.escape(p['name'])}</b>"
+        body = f"🇺🇿 <b>Yangi o'zbekcha nomni yozing</b>\nHozirgi: <b>{html.escape(p['name'])}</b>"
+    elif field == "name_ru":
+        body = (f"🇷🇺 <b>Yangi ruscha nomni yozing</b>\nHozirgi: <b>{html.escape(p['name_ru'] or '—')}</b>\n"
+                f"<i>Rus tilini tanlagan mijozlar shu nomni ko'radi.</i>")
     else:
         body = f"💵 <b>Yangi narxni yozing</b> ({k['unit']})\nHozirgi: <b>{price_str(p)}</b>\n<i>Masalan: 22 yoki 5.5</i>"
     await ask(cb.message, state, AdminForm.edit, head([k["title"], p["name"]], f"{k['icon']} <b>{html.escape(p['name'])}</b>")
@@ -497,11 +520,12 @@ def valid_name(text):
 async def adm_edit_set(msg: Message, state: FSMContext):
     d = await state.get_data()
     p = db.products[d["key"]]
-    if d["field"] == "name":
+    if d["field"] in ("name", "name_ru"):
         value = valid_name(msg.text)
         if value is None:
             return await msg.answer("❌ Nom 1 dan 40 belgigacha bo'lsin.")
-        notice = f"✅ <b>Saqlandi:</b> nomi «{html.escape(p['name'])}» → «{html.escape(value)}»"
+        which = "o'zbekcha nomi" if d["field"] == "name" else "ruscha nomi"
+        notice = f"✅ <b>Saqlandi:</b> {which} «{html.escape(p[d['field']] or '—')}» → «{html.escape(value)}»"
     else:
         value = parse_price(msg.text)
         if value is None:
@@ -571,9 +595,9 @@ async def adm_new(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.clear()
     k = KINDS[kind]
-    steps = "nomi → " + ("narxi → " if k["unit"] else "") + ("rasmi" if k["image"] else "tayyor")
+    steps = "o'zbekcha nomi → ruscha nomi → " + ("narxi → " if k["unit"] else "") + ("rasmi" if k["image"] else "tayyor")
     await ask(cb.message, state, AdminForm.new_name, head([k["title"], "Yangi"], f"➕ <b>YANGI {k['one'].upper()}</b>")
-              + f"<i>Qadamlar: {steps}</i>\n\n✏️ <b>Nomini yozing:</b>", f"adm:k:{kind}", kind=kind)
+              + f"<i>Qadamlar: {steps}</i>\n\n🇺🇿 <b>O'zbekcha nomini yozing:</b>", f"adm:k:{kind}", kind=kind)
 
 
 @dp.message(AdminForm.new_name, is_admin, NOT_CMD)
@@ -583,12 +607,26 @@ async def adm_new_name(msg: Message, state: FSMContext):
         return await msg.answer("❌ Nom 1 dan 40 belgigacha bo'lsin.")
     kind = (await state.get_data())["kind"]
     k = KINDS[kind]
+    await clean_input(msg, state)
+    await ask(msg, state, AdminForm.new_name_ru, head([k["title"], "Yangi"], f"➕ <b>{html.escape(name)}</b>")
+              + "🇷🇺 <b>Ruscha nomini yozing:</b>\n<i>Rus tilini tanlagan mijozlar shu nomni ko'radi.</i>",
+              f"adm:k:{kind}", edit=False, kind=kind, name=name)
+
+
+@dp.message(AdminForm.new_name_ru, is_admin, NOT_CMD)
+async def adm_new_name_ru(msg: Message, state: FSMContext):
+    name_ru = valid_name(msg.text)
+    if not name_ru:
+        return await msg.answer("❌ Nom 1 dan 40 belgigacha bo'lsin.")
+    d = await state.get_data()
+    kind, name = d["kind"], d["name"]
+    k = KINDS[kind]
     if k["unit"]:
         await clean_input(msg, state)
         return await ask(msg, state, AdminForm.new_price, head([k["title"], "Yangi"], f"➕ <b>{html.escape(name)}</b>")
                          + f"💵 <b>Narxini yozing</b> ({k['unit']})\n<i>Masalan: 22 yoki 5.5</i>",
-                         f"adm:k:{kind}", edit=False, kind=kind, name=name)
-    await finish_new(msg, state, kind, name, None)
+                         f"adm:k:{kind}", edit=False, kind=kind, name=name, name_ru=name_ru)
+    await finish_new(msg, state, kind, name, name_ru, None)
 
 
 @dp.message(AdminForm.new_price, is_admin, NOT_CMD)
@@ -597,11 +635,11 @@ async def adm_new_price(msg: Message, state: FSMContext):
     if price is None:
         return await msg.answer("❌ Faqat son yozing. Masalan: 22 yoki 5.5")
     d = await state.get_data()
-    await finish_new(msg, state, d["kind"], d["name"], price)
+    await finish_new(msg, state, d["kind"], d["name"], d["name_ru"], price)
 
 
-async def finish_new(msg: Message, state: FSMContext, kind, name, price):
-    key = await db.add_product(kind, name, price)
+async def finish_new(msg: Message, state: FSMContext, kind, name, name_ru, price):
+    key = await db.add_product(kind, name, name_ru, price)
     await clean_input(msg, state)
     if KINDS[kind]["image"]:
         return await ask_photo(msg, state, key, edit=False, new=True)
@@ -715,38 +753,30 @@ STATUS = {  # holat: (emoji, sarlavha, hashtag)
     "confirmed": ("✅", "TASDIQLANGAN BUYURTMA", "#tasdiqlangan"),
     "cancelled": ("❌", "BEKOR QILINGAN BUYURTMA", "#bekor_qilingan"),
 }
+LANG_NAME = {"uz": "O'zbekcha", "ru": "Ruscha"}
 
 
-def order_body(o):
-    """Buyurtma tafsilotlari (o — db.get_order qatori). Mijozga ham, guruhga ham bir xil."""
-    handle = {"chap": "Chap tomonda", "ong": "O'ng tomonda"}.get(o["handle"], "Ruchkasiz")
-    delivery = "Shahar bo'ylab yetkazib berish" if o["delivery"] else "O'zi olib ketadi"
-    return (
-        f"{pe('👤')} <b>Mijoz:</b> {html.escape(o['customer_name'] or '-')}\n"
-        f"{pe('📞')} <b>Telefon:</b> {o['phone'] or '-'}\n\n"
-        f"<blockquote>"
-        f"📐 <b>O'lcham:</b> {o['width']} × {o['height']} mm\n"
-        f"🔢 <b>Soni:</b> {o['count']} dona\n"
-        f"🪟 <b>Oyna:</b> {html.escape(pname(o['glass']))}\n"
-        f"{pe('🎨')} <b>Profil rangi:</b> {html.escape(pname(o['color']))}\n"
-        f"🔩 <b>Furnitura:</b> {html.escape(pname(o['fitting']))} — {o['fitting_count']} dona/fasad\n"
-        f"{pe('✋')} <b>Ruchka:</b> {handle}\n"
-        f"🚚 <b>Yetkazish:</b> {delivery}"
-        f"</blockquote>\n\n"
-        f"{pe('💰')} <b>JAMI: {money(float(o['usd']))} USD</b>\n"
-        f"{pe('💸')} <b>So'mda: {money(o['total_sum'])} so'm</b>"
-        + (" <i>(yetkazish bilan)</i>" if o["delivery"] else "") + "\n"
-        f"{pe('📈')} Dollar kursi: 1 USD = {num(float(o['rate']))} so'm"
-    )
+def order_body(o, lang="uz"):
+    """Buyurtma tafsilotlari (o — db.get_order qatori). Mijozga uning tilida, guruhga o'zbekcha."""
+    return t(lang, "order_body",
+             name=html.escape(o["customer_name"] or "-"), phone=o["phone"] or "-",
+             w=o["width"], h=o["height"], count=o["count"],
+             glass=html.escape(pname(o["glass"], lang)), color=html.escape(pname(o["color"], lang)),
+             fitting=html.escape(pname(o["fitting"], lang)), fc=o["fitting_count"],
+             handle=t(lang, f"handle_{o['handle'] or 'none'}"),
+             delivery=t(lang, "delivery_yes" if o["delivery"] else "delivery_no"),
+             usd=money(float(o["usd"])), sum=money(o["total_sum"]), rate=num(float(o["rate"])),
+             with_dlv=t(lang, "with_delivery") if o["delivery"] else "")
 
 
-def group_card(o):
+def group_card(o, lang=None):
     icon, title, tag = STATUS[o["status"]]
     tg = (f"@{o['username']}" if o["username"]
           else f'<a href="tg://user?id={o["user_id"]}">{html.escape(o["full_name"] or "profil")}</a>')
     text = (f"{pe(icon)} <b>{title} #{o['id']}</b>\n{LINE}\n"
             f"{order_body(o)}\n{LINE}\n"
             f"{pe('💬')} <b>Telegram:</b> {tg}\n"
+            + (f"🌐 <b>Mijoz tili:</b> {LANG_NAME[lang]}\n" if lang else "") +
             f"{pe('⏰')} <b>Vaqt:</b> {o['created_str']}")
     if o["status"] != "new":
         who = "Tasdiqladi" if o["status"] == "confirmed" else "Bekor qildi"
@@ -779,44 +809,66 @@ async def group_decision(cb: CallbackQuery):
     who = cb.from_user.full_name + (f" (@{cb.from_user.username})" if cb.from_user.username else "")
     changed = await db.set_status(int(calc_id), status, who)
     o = await db.get_order(int(calc_id))
+    lang = await db.get_lang(o["user_id"]) or "uz"
     try:
-        await cb.message.edit_text(group_card(o), reply_markup=group_buttons(o))
+        await cb.message.edit_text(group_card(o, lang), reply_markup=group_buttons(o))
     except TelegramBadRequest:
         pass
     if not changed:
         return await cb.answer(f"Bu buyurtma allaqachon: {STATUS_NAME.get(o['status'], '-')}", show_alert=True)
     await cb.answer("✅ Tasdiqlandi" if status == "confirmed" else "❌ Bekor qilindi")
-    text = (f"{pe('🎉')} <b>Buyurtmangiz #{o['id']} tasdiqlandi!</b>\nRahmat, siz bilan ishlashdan xursandmiz {pe('🤝')}"
-            if status == "confirmed" else
-            f"{pe('❌')} <b>Buyurtmangiz #{o['id']} bekor qilindi.</b>\nSavollar bo'lsa, menejerimizga yozing: {pe('💬')} {CONTACT}")
     try:
-        await cb.bot.send_message(o["user_id"], text)
+        await cb.bot.send_message(o["user_id"], t(lang, "notify_confirmed" if status == "confirmed" else "notify_cancelled",
+                                                  id=o["id"]))
     except Exception:
         logging.exception("Mijozga holatni yuborib bo'lmadi: %s", o["user_id"])
 
 
+# ================= Til =================
+
+LANG_KB = grid([("🇺🇿 O'zbekcha", "lang:uz", "primary"), ("🇷🇺 Русский", "lang:ru", "primary")], 2)
+
+
+async def lang_of(user_id):
+    return await db.get_lang(user_id) or "uz"
+
+
+@dp.message(Command("lang"))
+async def choose_lang(msg: Message, state: FSMContext):
+    await db.upsert_user(msg.from_user)
+    await state.clear()
+    await msg.answer("🌐 <b>Tilni tanlang</b>\n🌐 <b>Выберите язык</b>", reply_markup=LANG_KB)
+
+
+@dp.callback_query(F.data.in_({"lang:uz", "lang:ru"}))
+async def set_lang(cb: CallbackQuery, state: FSMContext):
+    lang = cb.data[5:]
+    await db.upsert_user(cb.from_user)
+    await db.set_lang(cb.from_user.id, lang)
+    await cb.answer()
+    await cb.message.edit_text(t(lang, "lang_set"))
+    await begin(cb.message, state, lang)
+
+
 # ================= KARUSEL =================
 
-CAROUSEL_TITLE = {"glass": f"{step(4)}{pe('✨')} <b>Oyna turini</b> tanlang",
-                  "color": f"{step(5)}{pe('🎨')} <b>Profil rangini</b> tanlang"}
-
-
-def carousel(kind, i):
+def carousel(kind, i, lang):
     """Bitta xabar: rasm, tagida nomi, ◀️ Tanlash ▶️. Tanlash callback'i 'glass:key' / 'color:key'."""
     lst = items(kind)
     i %= len(lst)
     p = lst[i]
-    markup = grid([("◀️", f"car:{kind}:{i - 1}"), ("Tanlash", f"{kind}:{p['key']}", "success", "✅"),
+    markup = grid([("◀️", f"car:{kind}:{i - 1}"), (t(lang, "b_choose"), f"{kind}:{p['key']}", "success", "✅"),
                    ("▶️", f"car:{kind}:{i + 1}")], 3)
-    caption = (f"{CAROUSEL_TITLE[kind]}:\n\n<b>{html.escape(p['name'])}</b>  ·  {i + 1}/{len(lst)}\n\n"
-               f"<i>◀️ ▶️ — boshqa variantlarni ko'rish,  ✅ — shuni tanlash</i>")
+    title = step(lang, 4 if kind == "glass" else 5) + t(lang, f"title_{kind}")
+    caption = (f"{title}:\n\n<b>{html.escape(pname(p['key'], lang))}</b>  ·  {i + 1}/{len(lst)}\n\n"
+               + t(lang, "carousel_hint"))
     return *photo_for(p), caption, markup
 
 
-async def send_carousel(msg: Message, kind):
+async def send_carousel(msg: Message, kind, lang):
     if not items(kind):
-        return await msg.answer(f"Kechirasiz, hozircha variantlar yo'q. Bog'lanish: {CONTACT}")
-    photo, path, caption, markup = carousel(kind, 0)
+        return await msg.answer(t(lang, "no_variants"))
+    photo, path, caption, markup = carousel(kind, 0, lang)
     remember(path, await msg.answer_photo(photo, caption=caption, reply_markup=markup))
 
 
@@ -825,7 +877,7 @@ async def carousel_nav(cb: CallbackQuery):
     _, kind, i = cb.data.split(":")
     if not items(kind):
         return await cb.answer()
-    photo, path, caption, markup = carousel(kind, int(i))
+    photo, path, caption, markup = carousel(kind, int(i), await lang_of(cb.from_user.id))
     try:
         remember(path, await cb.message.edit_media(InputMediaPhoto(media=photo, caption=caption), reply_markup=markup))
     except TelegramBadRequest:  # tez bosilganda "message is not modified"
@@ -842,48 +894,51 @@ def visible(kind, key):
 
 @dp.message(CommandStart())
 async def start(msg: Message, state: FSMContext, user=None):
-    await db.upsert_user(user or msg.from_user)
+    user = user or msg.from_user
+    await db.upsert_user(user)
     await state.clear()
-    await msg.answer(
-        f"{pe('👋')} <b>Assalomu alaykum!</b>\n"
-        f"Bu bot <b>alyumin fasad</b> narxini bir necha soniyada hisoblab beradi {pe('✨')}\n{LINE}\n"
-        f"⚠️ O'lchamlarni faqat <b>millimetrda (mm)</b> kiriting. Masalan: <code>2400</code>\n"
-        f"Maksimal o'lcham: <b>{P.MAX_MM} mm</b>\n\n"
-        f"{step(1)}📏 Fasad <b>enini</b> kiriting (mm):",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    lang = await db.get_lang(user.id)
+    if not lang:  # birinchi marta — avval til
+        return await msg.answer("🌐 <b>Tilni tanlang</b>\n🌐 <b>Выберите язык</b>", reply_markup=LANG_KB)
+    await begin(msg, state, lang)
+
+
+async def begin(msg: Message, state: FSMContext, lang):
+    await state.clear()
+    await msg.answer(t(lang, "welcome") + step(lang, 1) + t(lang, "ask_width"), reply_markup=ReplyKeyboardRemove())
     await state.set_state(Form.width)
 
 
 @dp.message(Form.width)
 async def width(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
     v = parse_int(msg.text, 1, P.MAX_MM)
     if not v:
-        return await msg.answer(f"❌ Noto'g'ri. Enini millimetrda, faqat son bilan yozing (eng ko'pi {P.MAX_MM}).\n"
-                                f"Masalan: <code>2400</code>")
+        return await msg.answer(t(lang, "err_width"))
     await state.update_data(width=v)
-    await msg.answer(f"{step(2)}📏 Fasad <b>balandligini</b> kiriting (mm):\n<i>Masalan: 720</i>")
+    await msg.answer(step(lang, 2) + t(lang, "ask_height"))
     await state.set_state(Form.height)
 
 
 @dp.message(Form.height)
 async def height(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
     v = parse_int(msg.text, 1, P.MAX_MM)
     if not v:
-        return await msg.answer(f"❌ Noto'g'ri. Balandlikni millimetrda, faqat son bilan yozing (eng ko'pi {P.MAX_MM}).\n"
-                                f"Masalan: <code>720</code>")
+        return await msg.answer(t(lang, "err_height"))
     await state.update_data(height=v)
-    await msg.answer(f"{step(3)}🔢 Shu o'lchamdagi fasaddan <b>nechta</b> kerak?\n<i>Masalan: 4</i>")
+    await msg.answer(step(lang, 3) + t(lang, "ask_count"))
     await state.set_state(Form.count)
 
 
 @dp.message(Form.count)
 async def count(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
     v = parse_int(msg.text, 1, 1000)
     if not v:
-        return await msg.answer("❌ Fasad sonini faqat son bilan yozing (1 dan 1000 gacha). Masalan: <code>4</code>")
+        return await msg.answer(t(lang, "err_count"))
     await state.update_data(count=v)
-    await send_carousel(msg, "glass")
+    await send_carousel(msg, "glass", lang)
     await state.set_state(Form.glass)
 
 
@@ -891,26 +946,29 @@ async def count(msg: Message, state: FSMContext):
 
 @dp.callback_query(Form.glass, F.data.startswith("glass:"))
 async def glass(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
     p = visible("glass", cb.data.split(":")[1])
     if not p:
-        return await cb.answer("Bu variant hozir mavjud emas", show_alert=True)
+        return await cb.answer(t(lang, "a_not_available"), show_alert=True)
     await state.update_data(glass=p["key"])
-    await cb.answer(p["name"])
-    await cb.message.edit_caption(caption=f"{pe('✅')} Oyna: <b>{html.escape(p['name'])}</b>", reply_markup=None)
-    await send_carousel(cb.message, "color")
+    await cb.answer()
+    await cb.message.edit_caption(caption=t(lang, "chosen_glass", name=html.escape(pname(p["key"], lang))), reply_markup=None)
+    await send_carousel(cb.message, "color", lang)
     await state.set_state(Form.color)
 
 
 @dp.callback_query(Form.color, F.data.startswith("color:"))
 async def color(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
     p = visible("color", cb.data.split(":")[1])
     if not p:
-        return await cb.answer("Bu variant hozir mavjud emas", show_alert=True)
+        return await cb.answer(t(lang, "a_not_available"), show_alert=True)
     await state.update_data(color=p["key"])
-    await cb.answer(p["name"])
-    await cb.message.edit_caption(caption=f"{pe('✅')} Profil rangi: <b>{html.escape(p['name'])}</b>", reply_markup=None)
-    await cb.message.answer(f"{step(6)}🔩 <b>Furnitura</b> (petlya) turini tanlang:",
-                            reply_markup=grid([(f["name"], f"fit:{f['key']}", "primary") for f in items("fitting")], 2))
+    await cb.answer()
+    await cb.message.edit_caption(caption=t(lang, "chosen_color", name=html.escape(pname(p["key"], lang))), reply_markup=None)
+    await cb.message.answer(step(lang, 6) + t(lang, "ask_fitting"),
+                            reply_markup=grid([(pname(f["key"], lang), f"fit:{f['key']}", "primary")
+                                               for f in items("fitting")], 2))
     await state.set_state(Form.fitting)
 
 
@@ -918,73 +976,79 @@ async def color(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(Form.fitting, F.data.startswith("fit:"))
 async def fitting(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
     p = visible("fitting", cb.data.split(":")[1])
     if not p:
-        return await cb.answer("Bu variant hozir mavjud emas", show_alert=True)
+        return await cb.answer(t(lang, "a_not_available"), show_alert=True)
     await state.update_data(fitting=p["key"])
     await cb.answer()
-    await cb.message.edit_text(f"{pe('✅')} Furnitura: <b>{html.escape(p['name'])}</b>")
-    await cb.message.answer(f"{step(7)}🔢 <b>Bitta fasadga nechta</b> furnitura kerak?\n"
-                            f"<i>Masalan: 2. Kerak bo'lmasa 0 yozing.</i>")
+    await cb.message.edit_text(t(lang, "chosen_fitting", name=html.escape(pname(p["key"], lang))))
+    await cb.message.answer(step(lang, 7) + t(lang, "ask_fit_count"))
     await state.set_state(Form.fitting_count)
 
 
 @dp.message(Form.fitting_count)
 async def fitting_count(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
     v = parse_int(msg.text, 0, 20)
     if v is None:
-        return await msg.answer("❌ Faqat son yozing (0 dan 20 gacha). Masalan: <code>2</code>")
+        return await msg.answer(t(lang, "err_fit_count"))
     await state.update_data(fitting_count=v)
-    await msg.answer(f"{step(8)}{pe('✋')} Fasad <b>ruchkalimi</b> yoki <b>ruchkasiz</b>?\n"
-                     f"<i>Ruchka profilning o'zidan chiqariladi.</i>",
-                     reply_markup=grid([("Ruchkali", "handle:yes", "primary"), ("Ruchkasiz", "handle:no", "primary")], 2))
+    await msg.answer(step(lang, 8) + t(lang, "ask_handle"),
+                     reply_markup=grid([(t(lang, "b_handle_yes"), "handle:yes", "primary"),
+                                        (t(lang, "b_handle_no"), "handle:no", "primary")], 2))
     await state.set_state(Form.handle)
 
 
 # ================= 7-8. Ruchka =================
 
-async def ask_delivery(msg: Message, state: FSMContext):
-    await msg.answer(f"{step(9)}🚚 <b>Yetkazib berish</b> kerakmi?",
-                     reply_markup=grid([(f"Shahar bo'ylab — {money(round(db.settings['delivery']))} so'm", "dlv:yes",
-                                         "primary", "🚚"),
-                                        ("O'zim olib ketaman", "dlv:no", "primary", "🏠")]))
+async def ask_delivery(msg: Message, state: FSMContext, lang):
+    await msg.answer(step(lang, 9) + t(lang, "ask_delivery"),
+                     reply_markup=grid([(t(lang, "b_delivery_yes", sum=money(round(db.settings["delivery"]))),
+                                         "dlv:yes", "primary", "🚚"),
+                                        (t(lang, "b_delivery_no"), "dlv:no", "primary", "🏠")]))
     await state.set_state(Form.delivery)
 
 
 @dp.callback_query(Form.handle, F.data.startswith("handle:"))
 async def handle(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
     await cb.answer()
     if cb.data == "handle:yes":
-        await cb.message.edit_text(f"{pe('✋')} Ruchka qaysi tomonda?",
-                                   reply_markup=grid([("⬅️ Chap", "side:chap", "primary"), ("O'ng ➡️", "side:ong", "primary")], 2))
+        await cb.message.edit_text(t(lang, "ask_side"),
+                                   reply_markup=grid([(t(lang, "b_left"), "side:chap", "primary"),
+                                                      (t(lang, "b_right"), "side:ong", "primary")], 2))
         await state.set_state(Form.side)
     else:
         await state.update_data(side=None)
-        await cb.message.edit_text(f"{pe('✅')} Ruchka: <b>Ruchkasiz</b>")
-        await ask_delivery(cb.message, state)
+        await cb.message.edit_text(t(lang, "chosen_handle", v=t(lang, "handle_none")))
+        await ask_delivery(cb.message, state, lang)
 
 
 @dp.callback_query(Form.side, F.data.in_({"side:chap", "side:ong"}))
 async def side(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
     s = cb.data.split(":")[1]
     await state.update_data(side=s)
     await cb.answer()
-    await cb.message.edit_text(f"{pe('✅')} Ruchka: <b>{'Chap' if s == 'chap' else 'O‘ng'} tomonda</b>")
-    await ask_delivery(cb.message, state)
+    await cb.message.edit_text(t(lang, "chosen_handle", v=t(lang, f"handle_{s}")))
+    await ask_delivery(cb.message, state, lang)
 
 
 # ================= 9. Yetkazish -> hisob, ism, telefon =================
 
-PHONE_KB = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Raqamni yuborish", request_contact=True, style="success",
-                                                         icon_custom_emoji_id=EMOJI.get("📱"))]],
+def phone_kb(lang):
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t(lang, "b_send_phone"), request_contact=True,
+                                                         style="success", icon_custom_emoji_id=EMOJI.get("📱"))]],
                                resize_keyboard=True, one_time_keyboard=True)
 
 
 @dp.callback_query(Form.delivery, F.data.in_({"dlv:yes", "dlv:no"}))
 async def delivery(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
     await cb.answer()
     dlv = cb.data == "dlv:yes"
-    await cb.message.edit_text(f"{pe('✅')} Yetkazish: <b>{'Shahar bo‘ylab' if dlv else 'O‘zim olib ketaman'}</b>")
+    await cb.message.edit_text(t(lang, "chosen_delivery", v=t(lang, "delivery_yes" if dlv else "delivery_no")))
 
     d = await state.get_data()
     rate = await asyncio.to_thread(get_rate)
@@ -1001,79 +1065,76 @@ async def delivery(cb: CallbackQuery, state: FSMContext):
 
     saved = await db.get_user_contact(cb.from_user.id)
     if not saved:
-        return await ask_name(cb.message, state)
-    await cb.message.answer(
-        f"{step(10)}{pe('📋')} <b>SIZNING MA'LUMOTLARINGIZ</b>\n{LINE}\n"
-        f"{pe('👤')} <b>Ism va familiya:</b> {html.escape(saved[0])}\n"
-        f"{pe('📞')} <b>Telefon:</b> {saved[1]}\n{LINE}\n"
-        f"Shu ma'lumotlar bilan davom etasizmi? {pe('👇')}",
-        reply_markup=grid([("Tasdiqlash", "contact:ok", "success", "✅"), ("Tahrirlash", "contact:edit", "primary", "✏")], 2))
+        return await ask_name(cb.message, state, lang)
+    await cb.message.answer(step(lang, 10) + t(lang, "saved_contact", name=html.escape(saved[0]), phone=saved[1]),
+                            reply_markup=grid([(t(lang, "b_confirm"), "contact:ok", "success", "✅"),
+                                               (t(lang, "b_edit"), "contact:edit", "primary", "✏")], 2))
     await state.set_state(Form.contact)
 
 
-async def ask_name(msg: Message, state: FSMContext):
-    await msg.answer(f"{step(10)}{pe('👤')} <b>Ism va familiyangizni</b> kiriting:\n<i>Masalan: Aliyev Vali</i>")
+async def ask_name(msg: Message, state: FSMContext, lang):
+    await msg.answer(step(lang, 10) + t(lang, "ask_name"))
     await state.set_state(Form.name)
 
 
 @dp.callback_query(Form.contact, F.data.in_({"contact:ok", "contact:edit"}))
 async def contact_choice(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
     await cb.answer()
     saved = await db.get_user_contact(cb.from_user.id)
     if cb.data == "contact:edit" or not saved:
-        await cb.message.edit_text(f"{pe('✏')} Ma'lumotlarni qaytadan kiritamiz.")
-        return await ask_name(cb.message, state)
+        await cb.message.edit_text(t(lang, "contact_edit"))
+        return await ask_name(cb.message, state, lang)
     await cb.message.edit_text(f"{pe('✅')} {html.escape(saved[0])} · {saved[1]}")
-    await show_order(cb.message, state, *saved)
+    await show_order(cb.message, state, lang, *saved)
 
 
 @dp.message(Form.name)
 async def name(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
     text = " ".join((msg.text or "").split())
     if not 2 <= len(text) <= 100 or any(c.isdigit() for c in text):
-        return await msg.answer("❌ Ism va familiyani to'g'ri kiriting. Masalan: Aliyev Vali")
+        return await msg.answer(t(lang, "err_name"))
     await state.update_data(customer_name=text)
-    await msg.answer(f"{pe('📞')} <b>Telefon raqamingizni</b> yuboring — pastdagi tugmani bosing yoki yozing.\n"
-                     "<i>Masalan: +998901234567</i>\n\n"
-                     "⚠️ Mutaxassislarimiz aynan <b>shu raqamga</b> aloqaga chiqishadi, iltimos raqamni to'g'ri kiriting.",
-                     reply_markup=PHONE_KB)
+    await msg.answer(t(lang, "ask_phone"), reply_markup=phone_kb(lang))
     await state.set_state(Form.phone)
 
 
-def user_card(o):
-    return f"{pe('🛒')} <b>BUYURTMANGIZ #{o['id']}</b>\n{LINE}\n{order_body(o)}\n{LINE}\n"
+def user_card(o, lang):
+    return f"{t(lang, 'order_title', id=o['id'])}\n{LINE}\n{order_body(o, lang)}\n{LINE}\n"
 
 
 @dp.message(Form.phone)
 async def phone(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
     raw = msg.contact.phone_number if msg.contact else re.sub(r"[\s\-()]", "", msg.text or "")
     if not re.fullmatch(r"\+?\d{9,15}", raw):
-        return await msg.answer("❌ Raqam noto'g'ri. Masalan: +998901234567\n"
-                                "⚠️ Shu raqamga aloqaga chiqamiz, to'g'ri kiriting.", reply_markup=PHONE_KB)
+        return await msg.answer(t(lang, "err_phone"), reply_markup=phone_kb(lang))
     digits = raw.lstrip("+")
     number = "+" + ("998" + digits if len(digits) == 9 else digits)  # 901234567 -> +998901234567
     name = (await state.get_data())["customer_name"]
     await db.save_user_contact(msg.from_user.id, name, number)  # keyingi buyurtmada qayta so'ralmaydi
-    await msg.answer(f"{pe('✅')} Raqam qabul qilindi.", reply_markup=ReplyKeyboardRemove())
-    await show_order(msg, state, name, number)
+    await msg.answer(t(lang, "phone_ok"), reply_markup=ReplyKeyboardRemove())
+    await show_order(msg, state, lang, name, number)
 
 
-async def show_order(msg: Message, state: FSMContext, name, number):
+async def show_order(msg: Message, state: FSMContext, lang, name, number):
     """Kontaktni hisobga yozib, mijozga tasdiqlash kartasini ko'rsatadi."""
     calc_id = (await state.get_data())["calc_id"]
     await db.set_contact(calc_id, name, number)
     await state.set_state(None)
     o = await db.get_order(calc_id)
-    await msg.answer(user_card(o) + f"{pe('👇')} Ma'lumotlarni tekshirib, buyurtmani <b>tasdiqlang</b>:",
-                     reply_markup=grid([("Tasdiqlash", f"ord:ok:{o['id']}", "success", "✅"),
-                                        ("Bekor qilish", f"ord:no:{o['id']}", "danger", "❌")], 2))
+    await msg.answer(user_card(o, lang) + t(lang, "confirm_prompt"),
+                     reply_markup=grid([(t(lang, "b_confirm"), f"ord:ok:{o['id']}", "success", "✅"),
+                                        (t(lang, "b_cancel"), f"ord:no:{o['id']}", "danger", "❌")], 2))
 
 
 # ================= 10. Mijoz tasdig'i =================
 
-AFTER_ORDER = grid([("Savol yoki izoh qoldirish", "comment", "primary", "✍"),
-                    ("Yangi hisob", "restart", None, "🔄"),
-                    ("Biz bilan bog'lanish", PROFILE_LINK, None, "💬")])
+def after_order_kb(lang):
+    return grid([(t(lang, "b_comment"), "comment", "primary", "✍"),
+                 (t(lang, "b_new"), "restart", None, "🔄"),
+                 (t(lang, "b_contact"), PROFILE_LINK, None, "💬")])
 
 
 @dp.callback_query(F.data.startswith("ord:"))
@@ -1082,21 +1143,20 @@ async def order_decision(cb: CallbackQuery):
     o = await db.get_order(int(calc_id))
     if not o or o["user_id"] != cb.from_user.id:
         return await cb.answer()
+    lang = await lang_of(cb.from_user.id)
     if action == "no":
-        await cb.answer("Bekor qilindi")
+        await cb.answer(t(lang, "a_cancelled"))
         if o["ordered_at"] is None:  # yuborilganini qaytarib bo'lmaydi
-            await cb.message.edit_text(user_card(o) + f"{pe('❌')} <b>Buyurtma bekor qilindi.</b> Ma'lumotlar yuborilmadi.",
-                                       reply_markup=grid([("Qayta hisoblash", "restart", "primary", "🔄")]))
+            await cb.message.edit_text(user_card(o, lang) + t(lang, "order_cancelled"),
+                                       reply_markup=grid([(t(lang, "b_restart"), "restart", "primary", "🔄")]))
         return
     if not await db.submit_order(o["id"]):
-        return await cb.answer("Bu buyurtma allaqachon yuborilgan.", show_alert=True)
-    await cb.answer("✅ Yuborildi")
+        return await cb.answer(t(lang, "a_already_sent"), show_alert=True)
+    await cb.answer(t(lang, "a_sent"))
     o = await db.get_order(o["id"])
-    await cb.message.edit_text(
-        user_card(o) + f"{pe('🎉')} <b>Buyurtmangiz adminlarga yuborildi!</b>\n"
-        f"Tez orada mutaxassislarimiz siz bilan <b>{o['phone']}</b> raqami orqali bog'lanishadi {pe('🤝')}",
-        reply_markup=AFTER_ORDER)
-    await notify(cb.bot, group_card(o), group_buttons(o))
+    await cb.message.edit_text(user_card(o, lang) + t(lang, "order_sent", phone=o["phone"]),
+                               reply_markup=after_order_kb(lang))
+    await notify(cb.bot, group_card(o, lang), group_buttons(o))
 
 
 @dp.callback_query(F.data == "restart")
@@ -1110,31 +1170,30 @@ async def restart(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "comment")
 async def ask_comment(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
-    await cb.message.answer(f"{pe('✍')} Savol yoki izohingizni yozing:")
+    await cb.message.answer(t(await lang_of(cb.from_user.id), "ask_comment"))
     await state.set_state(Form.comment)
 
 
 @dp.message(Form.comment, F.text)
 async def comment(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
     await db.upsert_user(msg.from_user)
     await db.add_comment(msg.from_user.id, msg.text)
     await state.set_state(None)
-    await msg.answer(f"{pe('🙏')} Rahmat! Izohingiz qabul qilindi.\n\nQayta hisoblash: /start",
-                     reply_markup=grid([("Biz bilan bog'lanish", PROFILE_LINK, None, "💬")]))
-    await notify(msg.bot, f"{pe('💬')} <b>MIJOZ IZOHI</b>\n{LINE}\n{user_line(msg.from_user)}\n\n"
+    await msg.answer(t(lang, "comment_thanks"), reply_markup=grid([(t(lang, "b_contact"), PROFILE_LINK, None, "💬")]))
+    await notify(msg.bot, f"{pe('💬')} <b>MIJOZ IZOHI</b>\n{LINE}\n{user_line(msg.from_user)}\n"
+                          f"🌐 Mijoz tili: {LANG_NAME[lang]}\n\n"
                           f"<blockquote>{html.escape(msg.text)}</blockquote>\n\n#izoh")
 
 
 @dp.message(F.chat.type == "private")
 async def fallback(msg: Message):
-    await msg.answer("🤔 Tushunmadim.\n\n"
-                     "• Savolga javob berayotgan bo'lsangiz — yuqoridagi <b>tugmalardan birini</b> bosing.\n"
-                     "• Yangi narx hisoblash uchun — /start bosing.")
+    await msg.answer(t(await lang_of(msg.from_user.id), "fallback"))
 
 
 @dp.callback_query()
 async def stale_button(cb: CallbackQuery):
-    await cb.answer("Bu tugma endi ishlamaydi. Yangi hisob boshlash uchun /start bosing.", show_alert=True)
+    await cb.answer(t(await lang_of(cb.from_user.id), "a_stale"), show_alert=True)
 
 
 async def main():
@@ -1142,7 +1201,10 @@ async def main():
         raise SystemExit("BOT_TOKEN va DATABASE_URL muhit o'zgaruvchilarini o'rnating")
     await db.init(DATABASE_URL)
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML", link_preview_is_disabled=True))
-    await bot.set_my_commands([BotCommand(command="start", description="Narx hisoblash")])
+    for lang, code in (("uz", None), ("ru", "ru")):  # menyu buyruqlari Telegram tiliga qarab
+        await bot.set_my_commands([BotCommand(command="start", description=t(lang, "b_menu_start")),
+                                   BotCommand(command="lang", description=t(lang, "b_menu_lang"))],
+                                  language_code=code)
     await dp.start_polling(bot)
 
 
