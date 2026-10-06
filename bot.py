@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import html
 import io
 import json
 import logging
@@ -32,6 +33,7 @@ if _env.exists():
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x}
+GROUP_ID = int(os.getenv("GROUP_ID", "-1004405057037"))  # buyurtma va izohlar shu guruhga
 PROFILE_LINK = "https://t.me/abdulloh_3344"
 IMAGES = Path(__file__).parent / "images"
 
@@ -51,6 +53,7 @@ class Form(StatesGroup):
     side = State()
     delivery = State()
     comment = State()
+    name = State()
     phone = State()
 
 
@@ -86,10 +89,15 @@ def money(x):
 
 
 def user_line(u):
-    return f"@{u.username or '-'} ({u.full_name}, id {u.id})"
+    return f"@{u.username or '-'} ({html.escape(u.full_name)}, id {u.id})"
 
 
-async def notify_admins(bot: Bot, text):
+async def notify(bot: Bot, text):
+    """Guruhga yuboradi; guruh ishlamasa buyurtma yo'qolmasin deb adminlarga."""
+    try:
+        return await bot.send_message(GROUP_ID, text)
+    except Exception:
+        logging.exception("Guruhga yuborib bo'lmadi: %s", GROUP_ID)
     for admin in ADMIN_IDS:
         try:
             await bot.send_message(admin, text)
@@ -162,11 +170,11 @@ async def adm_export(cb: CallbackQuery):
     rows = await db.export_rows()
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
-    w.writerow(["ID", "Sana", "User ID", "Username", "Ism", "Telefon", "Eni mm", "Balandligi mm", "Soni",
+    w.writerow(["ID", "Sana", "User ID", "Username", "Telegram ismi", "Buyurtmachi", "Telefon", "Eni mm", "Balandligi mm", "Soni",
                 "Oyna", "Rang", "Furnitura", "Furnitura/fasad", "Ruchka", "Yetkazish", "USD", "Kurs", "So'm",
                 "Buyurtma vaqti"])
     for r in rows:
-        w.writerow([r["id"], r["created_at"], r["user_id"], r["username"] or "", r["full_name"] or "", r["phone"] or "",
+        w.writerow([r["id"], r["created_at"], r["user_id"], r["username"] or "", r["full_name"] or "", r["customer_name"] or "", r["phone"] or "",
                     r["width"], r["height"], r["count"], P.GLASS.get(r["glass"], r["glass"]),
                     P.COLORS.get(r["color"], r["color"]), P.FITTINGS.get(r["fitting"], r["fitting"]),
                     r["fitting_count"], r["handle"] or "yo'q", "ha" if r["delivery"] else "yo'q",
@@ -590,8 +598,19 @@ async def order(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     if "calc_id" not in await state.get_data():
         return await cb.message.answer("Hisob topilmadi, qaytadan hisoblang: /start")
-    await cb.message.answer("Telefon raqamingizni yuboring — pastdagi tugmani bosing yoki yozing (masalan: +998901234567):",
-                            reply_markup=PHONE_KB)
+    await cb.message.answer("👤 <b>Ism va familiyangizni</b> kiriting:")
+    await state.set_state(Form.name)
+
+
+@dp.message(Form.name)
+async def name(msg: Message, state: FSMContext):
+    text = " ".join((msg.text or "").split())
+    if not 2 <= len(text) <= 100 or any(c.isdigit() for c in text):
+        return await msg.answer("❌ Ism va familiyani to'g'ri kiriting. Masalan: Aliyev Vali")
+    await state.update_data(customer_name=text)
+    await msg.answer("📞 <b>Telefon raqamingizni</b> yuboring — pastdagi tugmani bosing yoki yozing (masalan: +998901234567).\n\n"
+                     "⚠️ Mutaxassislarimiz aynan <b>shu raqamga</b> aloqaga chiqishadi, iltimos raqamni to'g'ri kiriting.",
+                     reply_markup=PHONE_KB)
     await state.set_state(Form.phone)
 
 
@@ -599,17 +618,20 @@ async def order(cb: CallbackQuery, state: FSMContext):
 async def phone(msg: Message, state: FSMContext):
     raw = msg.contact.phone_number if msg.contact else re.sub(r"[\s\-()]", "", msg.text or "")
     if not re.fullmatch(r"\+?\d{9,15}", raw):
-        return await msg.answer("❌ Raqam noto'g'ri. Masalan: +998901234567", reply_markup=PHONE_KB)
+        return await msg.answer("❌ Raqam noto'g'ri. Masalan: +998901234567\n"
+                                "⚠️ Shu raqamga aloqaga chiqamiz, to'g'ri kiriting.", reply_markup=PHONE_KB)
     digits = raw.lstrip("+")
     number = "+" + ("998" + digits if len(digits) == 9 else digits)  # 901234567 -> +998901234567
     d = await state.get_data()
     await db.set_phone(msg.from_user.id, number)
-    await db.mark_ordered(d["calc_id"])
+    await db.mark_ordered(d["calc_id"], d["customer_name"], number)
     await state.set_state(None)
-    await msg.answer(f"✅ Buyurtmangiz qabul qilindi! Tez orada siz bilan bog'lanamiz.\n\nBog'lanish: {PROFILE_LINK}\n"
-                     "Qayta hisoblash: /start", reply_markup=ReplyKeyboardRemove())
-    await notify_admins(msg.bot, f"🛒 <b>Yangi buyurtma #{d['calc_id']}</b>\n{user_line(msg.from_user)}\n"
-                                 f"📞 {number}\n\n{summary(d)}")
+    details = (f"🧾 <b>Buyurtma #{d['calc_id']}</b>\n"
+               f"👤 {html.escape(d['customer_name'])}\n📞 {number}\n\n{summary(d)}")
+    await msg.answer(f"{details}\n\n✅ Buyurtmangiz adminlarga yuborildi. Tez orada siz bilan <b>{number}</b> raqami orqali "
+                     f"bog'lanamiz!\n\nSavollar uchun: {PROFILE_LINK}\nQayta hisoblash: /start",
+                     reply_markup=ReplyKeyboardRemove())
+    await notify(msg.bot, f"🛒 <b>YANGI BUYURTMA</b>\n{details}\n\nTelegram: {user_line(msg.from_user)}")
 
 
 # ================= Izoh =================
@@ -627,7 +649,7 @@ async def comment(msg: Message, state: FSMContext):
     await db.add_comment(msg.from_user.id, msg.text)
     await state.set_state(None)
     await msg.answer(f"Rahmat! Izohingiz qabul qilindi. Bog'lanish: {PROFILE_LINK}\n\nQayta hisoblash: /start")
-    await notify_admins(msg.bot, f"💬 <b>Izoh</b>: {user_line(msg.from_user)}\n{msg.text}")
+    await notify(msg.bot, f"💬 <b>Izoh</b>: {user_line(msg.from_user)}\n{html.escape(msg.text)}")
 
 
 @dp.message()

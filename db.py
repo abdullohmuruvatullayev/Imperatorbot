@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS images (
     key     TEXT PRIMARY KEY,   -- glass_peppil, color_qora, ...
     file_id TEXT NOT NULL       -- Telegram file_id (rasm Telegram serverida turadi)
 );
+-- mavjud bazaga ham qo'shiladi
+ALTER TABLE calculations ADD COLUMN IF NOT EXISTS customer_name TEXT;
+ALTER TABLE calculations ADD COLUMN IF NOT EXISTS phone TEXT;
 CREATE INDEX IF NOT EXISTS calculations_created_at ON calculations(created_at);
 """
 
@@ -100,8 +103,9 @@ async def add_calc(user_id, d, usd, rate, total_sum):
         d["side"], d["delivery"], usd, rate, total_sum)
 
 
-async def mark_ordered(calc_id):
-    await pool.execute("UPDATE calculations SET ordered_at = now() WHERE id = $1", calc_id)
+async def mark_ordered(calc_id, customer_name, phone):
+    await pool.execute("UPDATE calculations SET ordered_at = now(), customer_name = $2, phone = $3 WHERE id = $1",
+                       calc_id, customer_name, phone)
 
 
 async def add_comment(user_id, text):
@@ -126,7 +130,7 @@ async def stats():
 
 async def export_rows():
     return await pool.fetch("""
-        SELECT c.id, to_char(c.created_at, 'YYYY-MM-DD HH24:MI') AS created_at, u.id AS user_id, u.username, u.full_name, u.phone,
+        SELECT c.id, to_char(c.created_at, 'YYYY-MM-DD HH24:MI') AS created_at, u.id AS user_id, u.username, u.full_name, c.customer_name, coalesce(c.phone, u.phone) AS phone,
                c.width, c.height, c.count, c.glass, c.color, c.fitting, c.fitting_count, c.handle,
                c.delivery, c.usd, c.rate, c.total_sum,
                to_char(c.ordered_at, 'YYYY-MM-DD HH24:MI') AS ordered_at
