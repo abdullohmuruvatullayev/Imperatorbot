@@ -1,0 +1,101 @@
+ALYUMIN FASAD NARX HISOBLASH BOTI — TEXNIK TOPSHIRIQ
+
+1. BOT MAQSADI
+Bot faqat alyumin fasad uchun narx hisoblaydi. Mijoz kiritgan ma'lumotlar asosida yakunda aniq narxni USDda va shu vaqtdagi dollar kursi bo'yicha so'mda ko'rsatadi.
+
+2. O'LCHAM KIRITISH
+- Eni millimetrda (mm) kiritiladi.
+- Balandligi millimetrda (mm) kiritiladi.
+- Fasad soni kiritiladi.
+- Maksimal eni: 2800 mm.
+- Maksimal balandligi: 2800 mm.
+- Mijozga ogohlantirish: o'lchamni faqat mmda kiriting. Masalan: 2400.
+- 2800 mm dan katta qiymat qabul qilinmaydi.
+- Maydon: (eni / 1000) x (balandligi / 1000) x fasad soni.
+
+3. OYNA TURINI TANLASH
+Har bir variant rasmi bilan chiqadi va tagida nomi yoziladi:
+- Peppil — 20 USD/m²
+- Yodiviy — 20 USD/m²
+- Prazrachniy — 20 USD/m²
+- Tosh oyna — 22 USD/m²
+- Tosh oyna tillali — narxi kiritiladi
+- Tosh oyna peppili — narxi kiritiladi
+- Reflonniy prazrachniy — 45 USD/m²
+- Reflonniy yodiviy — 45 USD/m²
+- Reflonniy peppil — 45 USD/m²
+- Reflonniy matoviy — 50 USD/m²
+- Lakabel — 20 USD/m²
+
+4. PROFIL RANGI
+Har bir rang rasmi bilan chiqadi va tagida nomi yoziladi:
+- Qora
+- Tilla matoviy
+- Tilla glyansoviy
+- Shanpan kulrang
+Hozircha profil ranglari uchun qo'shimcha narx belgilanmagan.
+
+5. FURNITURA
+Mijoz furnitura turini va har bir fasadda nechta dona kerakligini tanlaydi/kiritadi:
+- Blum — 5.5 USD/dona
+- Hettich — 5.5 USD/dona
+- Xitoy — 3 USD/dona
+- Xitoy DTS — 3 USD/dona
+
+6. RUCHKA VA PROFIL
+Mijozdan fasad ruchkalimi yoki ruchkasizligi so'raladi.
+Agar ruchkali bo'lsa, faqat quyidagi tanlovlar chiqadi:
+- Chap
+- O'ng
+
+Ruchka profilning o'zidan chiqadi. Tanlangan chap yoki o'ng vertikal tomon balandlik uzunligiga teng bo'ladi va 8.5 USD/metr hisoblanadi. Qolgan uch tomon 6 USD/metr hisoblanadi.
+Ruchkasiz profil: 6 USD/metr.
+Profil umumiy uzunligi fasad perimetri bo'yicha hisoblanadi:
+2 x (eni + balandligi), o'lchamlar metrga aylantiriladi.
+
+7. KONSTRUKSIYA YIG'ISH
+- Balandligi 1000 mm gacha bo'lgan fasad: 6 USD x fasad soni.
+- Balandligi 1000 mm dan baland fasad: 8 USD x fasad soni.
+
+8. QO'SHIMCHA MATERIALLAR
+Ugolnik:
+- Har bir fasadga 4 dona.
+- 1 dona narxi: 1.5 USD.
+- 1 fasad uchun: 6 USD.
+
+Rezinka:
+- Profilning ishlatilgan har bir metri uchun 0.80 USD.
+- Rezinka uzunligi profilning umumiy perimetri bo'yicha hisoblanadi.
+
+Yetkazib berish:
+- Shahar bo'ylab: 100 000 so'm.
+
+9. YAKUNIY HISOBLASH
+USDdagi yakuniy narx quyidagilardan tuziladi:
+Profil + oyna + furnitura + konstruksiya yig'ish + ugolnik + rezinka.
+
+So'mdagi yakuniy narx:
+USD yakuniy narx x hisoblash paytidagi USD kursi + 100 000 so'm yetkazib berish.
+
+10. MIJOZGA KO'RSATISH
+Hisoblash davomida alohida narxlar ko'rsatilmaydi. Yakunda quyidagilar chiqadi:
+- Jami narx: ... USD
+- So'mdagi qiymati: ... so'm
+- Hisoblangan kurs: 1 USD = ... so'm
+- Qo'shimcha savol yoki izoh qoldirish imkoniyati
+- Profil havolasi: https://t.me/abdulloh_3344
+
+11. MIJOZDAN SO'RALADIGAN TARTIB
+1) Eni va balandligi (mmda)
+2) Fasad soni
+3) Oyna turi — rasm va nomi bilan
+4) Profil rangi — rasm va nomi bilan
+5) Furnitura turi
+6) Har bir fasaddagi furnitura soni
+7) Ruchkali yoki ruchkasiz
+8) Ruchkali bo'lsa: Chap yoki O'ng
+9) Yetkazib berish
+10) Yakuniy USD va so'mdagi narx
+
+12. MUHIM
+Narxlar hisob-kitob jarayonida yashirin qoladi. Mijozga faqat yakuniy umumiy summa ko'rsatiladi. O'lchov va narxlar bo'yicha barcha kiritmalar tekshirilishi kerak.
