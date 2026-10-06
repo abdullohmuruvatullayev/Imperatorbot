@@ -37,6 +37,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x}
 GROUP_ID = int(os.getenv("GROUP_ID", "-1004405057037"))  # buyurtma va izohlar shu guruhga
 PROFILE_LINK = "https://t.me/abdulloh_3344"
+CONTACT = f'<a href="{PROFILE_LINK}">@{PROFILE_LINK.rsplit("/", 1)[-1]}</a>'  # matnda: @abdulloh_3344
 IMAGES = ROOT / "images"
 # Telegram'ning rasmiy premium (animatsiyali) emojilari: emoji -> custom_emoji_id.
 # Bot egasida Telegram Premium bo'lgani uchun ishlaydi; bo'lmasa oddiy emoji ko'rinadi.
@@ -466,7 +467,7 @@ async def group_decision(cb: CallbackQuery):
     await cb.answer("✅ Tasdiqlandi" if status == "confirmed" else "❌ Bekor qilindi")
     text = (f"{pe('🎉')} <b>Buyurtmangiz #{o['id']} tasdiqlandi!</b>\nRahmat, siz bilan ishlashdan xursandmiz {pe('🤝')}"
             if status == "confirmed" else
-            f"{pe('❌')} <b>Buyurtmangiz #{o['id']} bekor qilindi.</b>\nSavollar bo'lsa: {PROFILE_LINK}")
+            f"{pe('❌')} <b>Buyurtmangiz #{o['id']} bekor qilindi.</b>\nSavollar bo'lsa, menejerimizga yozing: {pe('💬')} {CONTACT}")
     try:
         await cb.bot.send_message(o["user_id"], text)
     except Exception:
@@ -819,7 +820,7 @@ async def main():
     if not BOT_TOKEN or not DATABASE_URL:
         raise SystemExit("BOT_TOKEN va DATABASE_URL muhit o'zgaruvchilarini o'rnating")
     await db.init(DATABASE_URL)
-    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML", link_preview_is_disabled=True))
     await bot.set_my_commands([BotCommand(command="start", description="Narx hisoblash")])
     await dp.start_polling(bot)
 
