@@ -81,7 +81,7 @@ async def init(dsn):
     async with pool.acquire() as c:
         await c.execute(SCHEMA)
         await c.executemany("INSERT INTO prices(key, value) VALUES($1, $2) ON CONFLICT DO NOTHING",
-                            [(k, v) for k, (_, v) in P.SETTINGS.items()])
+                            [(k, v[-1]) for k, v in P.SETTINGS.items()])
         settings.update({r["key"]: r["value"] for r in await c.fetch("SELECT key, value FROM prices")})
         if not await c.fetchval("SELECT count(*) FROM products"):
             await seed_products(c)

@@ -19,16 +19,16 @@ SEED = {
     "fitting": [("blum", "Blum", 5.5), ("hettich", "Hettich", 5.5), ("xitoy", "Xitoy", 3), ("xitoy_dts", "Xitoy DTS", 3)],
 }
 
-# Umumiy narx sozlamalari: kalit -> (izoh, qiymat)
+# Umumiy narx sozlamalari: kalit -> (nomi, birligi, boshlang'ich qiymat)
 SETTINGS = {
-    "profile": ("Profil, USD/metr", 6),
-    "handle_profile": ("Ruchkali tomon profili, USD/metr", 8.5),
-    "assembly_low": ("Yig'ish, balandlik ≤ 1000 mm, USD/fasad", 6),
-    "assembly_high": ("Yig'ish, balandlik > 1000 mm, USD/fasad", 8),
-    "corner": ("Ugolnik, USD/dona (4 dona/fasad)", 1.5),
-    "rubber": ("Rezinka, USD/metr", 0.8),
-    "delivery": ("Yetkazib berish, so'm", 100_000),
-    "fallback_rate": ("Zaxira kurs (CBU ishlamasa), so'm", 11_800),
+    "profile": ("Profil", "$/metr", 6),
+    "handle_profile": ("Ruchkali tomon profili", "$/metr", 8.5),
+    "assembly_low": ("Yig'ish (balandlik 1000 mm gacha)", "$/fasad", 6),
+    "assembly_high": ("Yig'ish (balandlik 1000 mm dan baland)", "$/fasad", 8),
+    "corner": ("Ugolnik (fasadga 4 dona)", "$/dona", 1.5),
+    "rubber": ("Rezinka", "$/metr", 0.8),
+    "delivery": ("Yetkazib berish", "so'm", 100_000),
+    "fallback_rate": ("Zaxira kurs (CBU ishlamasa)", "so'm", 11_800),
 }
 
 
@@ -56,7 +56,7 @@ def calc_sum(p, usd, rate, delivery):
 
 
 if __name__ == "__main__":
-    p = {k: v for k, (_, v) in SETTINGS.items()}
+    p = {k: v[-1] for k, v in SETTINGS.items()}
     # 1000x1000, ruchkasiz: profil 24 + oyna 20 + furn 2*5.5=11 + yig'ish 6 + ugolnik 6 + rezinka 3.2 = 70.2
     assert calc_usd(p, 1000, 1000, 1, 20, 5.5, 2, None) == 70.2
     # ruchkali: profil 1*8.5 + 3*6 = 26.5 -> 72.7; x2 fasad
