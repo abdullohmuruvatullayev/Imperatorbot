@@ -1,3 +1,5 @@
+import secrets
+
 import asyncpg
 
 import prices as P
@@ -39,9 +41,20 @@ CREATE TABLE IF NOT EXISTS prices (
     key   TEXT PRIMARY KEY,
     value DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS images (
-    key     TEXT PRIMARY KEY,   -- glass_peppil, color_qora, ...
-    file_id TEXT NOT NULL       -- Telegram file_id (rasm Telegram serverida turadi)
+CREATE TABLE IF NOT EXISTS images (   -- eski versiyadan; products'ga ko'chiriladi
+    key     TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS products (
+    key     TEXT PRIMARY KEY,                -- hisoblarda shu saqlanadi
+    kind    TEXT NOT NULL,                   -- glass | color | fitting
+    name    TEXT NOT NULL,
+    price   DOUBLE PRECISION,                -- oyna USD/m², furnitura USD/dona, rang NULL
+    file_id TEXT,                            -- admin yuklagan rasm (Telegram file_id)
+    image   TEXT,                            -- images/ papkadagi rasm nomi
+    hidden  BOOLEAN NOT NULL DEFAULT FALSE,  -- mijozlarga ko'rinmaydi
+    deleted BOOLEAN NOT NULL DEFAULT FALSE,  -- o'chirilgan; eski buyurtmalarda nomi saqlanib qoladi
+    sort    SERIAL
 );
 -- mavjud bazaga ham qo'shiladi
 ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_name TEXT;   -- buyurtmada kiritilgan ism-familiya
@@ -55,8 +68,8 @@ CREATE INDEX IF NOT EXISTS calculations_created_at ON calculations(created_at);
 """
 
 pool: asyncpg.Pool = None
-prices: dict = {}  # xotiradagi nusxa; bitta jarayon uchun yetarli
-images: dict = {}  # key -> file_id
+settings: dict = {}  # xotiradagi nusxa; bitta jarayon uchun yetarli
+products: dict = {}  # key -> dict, sort tartibida
 
 
 async def init(dsn):
@@ -68,25 +81,54 @@ async def init(dsn):
     async with pool.acquire() as c:
         await c.execute(SCHEMA)
         await c.executemany("INSERT INTO prices(key, value) VALUES($1, $2) ON CONFLICT DO NOTHING",
-                            [(k, v) for k, (_, v) in P.DEFAULTS.items()])
-        prices.update({r["key"]: r["value"] for r in await c.fetch("SELECT key, value FROM prices")})
-        images.update({r["key"]: r["file_id"] for r in await c.fetch("SELECT key, file_id FROM images")})
+                            [(k, v) for k, (_, v) in P.SETTINGS.items()])
+        settings.update({r["key"]: r["value"] for r in await c.fetch("SELECT key, value FROM prices")})
+        if not await c.fetchval("SELECT count(*) FROM products"):
+            await seed_products(c)
+    await load_products()
 
 
-async def set_price(key, value):
+async def seed_products(c):
+    """Birinchi ishga tushish: prices.py dagi katalog. Eski versiyada admin o'zgartirgan narx
+    (prices jadvalidagi glass.* / fit.*, None = yashirilgan) va yuklagan rasmlar saqlanadi."""
+    old_prices = {r["key"]: r["value"] for r in await c.fetch("SELECT key, value FROM prices")}
+    old_images = {r["key"]: r["file_id"] for r in await c.fetch("SELECT key, file_id FROM images")}
+    prefix = {"glass": "glass", "fitting": "fit"}
+    rows = []
+    for kind, items in P.SEED.items():
+        for key, name, price in items:
+            old_key = f"{prefix.get(kind)}.{key}"
+            hidden = old_key in old_prices and old_prices[old_key] is None
+            price = old_prices.get(old_key) or price
+            image = f"{kind}_{key}" if kind != "fitting" else None
+            rows.append((key, kind, name, price, old_images.get(image), image, hidden))
+    await c.executemany("INSERT INTO products(key, kind, name, price, file_id, image, hidden) "
+                        "VALUES($1, $2, $3, $4, $5, $6, $7)", rows)
+
+
+async def load_products():
+    products.clear()
+    for r in await pool.fetch("SELECT * FROM products ORDER BY sort"):
+        products[r["key"]] = dict(r)
+
+
+async def set_setting(key, value):
     await pool.execute("UPDATE prices SET value = $2 WHERE key = $1", key, value)
-    prices[key] = value
+    settings[key] = value
 
 
-async def set_image(key, file_id):
-    await pool.execute("INSERT INTO images(key, file_id) VALUES($1, $2) ON CONFLICT (key) DO UPDATE SET file_id = $2",
-                       key, file_id)
-    images[key] = file_id
+async def add_product(kind, name, price=None, file_id=None):
+    key = f"{kind[0]}{secrets.token_hex(3)}"
+    await pool.execute("INSERT INTO products(key, kind, name, price, file_id) VALUES($1, $2, $3, $4, $5)",
+                       key, kind, name, price, file_id)
+    await load_products()
+    return key
 
 
-async def delete_image(key):
-    await pool.execute("DELETE FROM images WHERE key = $1", key)
-    images.pop(key, None)
+async def update_product(key, field, value):
+    assert field in ("name", "price", "file_id", "hidden", "deleted")  # SQL'ga faqat shu nomlar tushadi
+    await pool.execute(f"UPDATE products SET {field} = $2 WHERE key = $1", key, value)
+    products[key][field] = value
 
 
 async def upsert_user(u):

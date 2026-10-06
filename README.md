@@ -19,15 +19,19 @@
 
 ## Admin panel (`/admin`)
 
-Tugmalar: 📊 Statistika, 📥 Eksport (CSV, Excel'da ochiladi), 💲 Narxlar (tanlang -> yangi qiymat yozing; oyna uchun `yoq` = yashirish),
-🖼 Rasmlar (tanlang -> yangi rasm yuboring; bazada saqlanadi, deploy kerak emas), 📢 Xabar yuborish (tasdiqlash bilan).
+- 📊 Statistika, 📥 Eksport (CSV, Excel'da ochiladi)
+- 🪟 Oyna turlari, 🎨 Profil ranglari, 🔩 Furnitura — ro'yxatdagi mahsulot ustiga bosing: nomi, narxi, rasmi,
+  yashirish/ko'rsatish, o'chirish. "➕ Yangi qo'shish" bilan yangi mahsulot (nom -> narx -> rasm).
+  O'chirilgan mahsulot eski buyurtmalarda nomi bilan qoladi. Mijozga kamida bitta variant ko'rinib turadi.
+- ⚙️ Narx sozlamalari — profil, yig'ish, ugolnik, rezinka, yetkazish, zaxira kurs
+- 📢 Xabar yuborish (tasdiqlash bilan)
 
-Buyurtma (telefon raqam bilan) va mijoz izohlari adminlarga darhol keladi.
+Buyurtmalar guruhga keladi (Tasdiqlandi / Bekor qilindi tugmalari, #tasdiqlangan / #bekor_qilingan hashtaglari).
 
 ## Fayllar
 
 - `bot.py` — bot; `db.py` — PostgreSQL; `prices.py` — nomlar, boshlang'ich narxlar, hisoblash formulasi (`python prices.py` → `ok`)
-- Yangi oyna/furnitura turi qo'shish: `prices.py` dagi ro'yxatga qo'shing — narxi bazaga avtomatik yoziladi.
+- Mahsulotlar bazada (`products`); `prices.py` dagi ro'yxat faqat birinchi ishga tushishda yoziladi.
 
 Rasm tartibi: admin paneldan yuklangan -> `images/` papkadagi -> `no_photo.png`. Papkadagi nomlar:
 

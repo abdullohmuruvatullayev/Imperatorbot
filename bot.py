@@ -44,6 +44,13 @@ IMAGES = ROOT / "images"
 EMOJI = json.loads((ROOT / "premium_emoji.json").read_text(encoding="utf-8"))
 LINE = "━━━━━━━━━━━━━━━━━━"
 
+# Katalog turlari: sarlavha, emoji, narx birligi (None = narxsiz), rasmi bormi
+KINDS = {
+    "glass": {"title": "Oyna turlari", "one": "oyna turi", "icon": "🪟", "unit": "USD/m²", "image": True},
+    "color": {"title": "Profil ranglari", "one": "profil rangi", "icon": "🎨", "unit": None, "image": True},
+    "fitting": {"title": "Furnitura", "one": "furnitura", "icon": "🔩", "unit": "USD/dona", "image": False},
+}
+
 dp = Dispatcher()
 is_admin = F.from_user.id.in_(ADMIN_IDS)
 
@@ -101,13 +108,21 @@ def parse_int(text, lo, hi):
         return int(text)
 
 
+def parse_price(text):
+    try:
+        v = float((text or "").strip().replace(",", ".").replace(" ", ""))
+    except ValueError:
+        return None
+    return v if 0 <= v < 10_000_000 else None
+
+
 def get_rate():
     try:
         with urllib.request.urlopen("https://cbu.uz/uz/arkhiv-kursov-valyut/json/USD/", timeout=10) as r:
             return float(json.load(r)[0]["Rate"])
     except Exception:
         logging.exception("Kursni olib bo'lmadi")
-        return db.prices["fallback_rate"]
+        return db.settings["fallback_rate"]
 
 
 def money(x):
@@ -116,6 +131,60 @@ def money(x):
 
 def user_line(u):
     return f"@{u.username or '-'} ({html.escape(u.full_name)}, id {u.id})"
+
+
+def pname(key):
+    """Mahsulot nomi; o'chirilgan bo'lsa ham eski buyurtmalarda chiqadi."""
+    return db.products.get(key, {}).get("name", key)
+
+
+def items(kind, admin=False):
+    """Katalogdagi mahsulotlar. Mijozga yashirinlari ko'rinmaydi, o'chirilganlar hech kimga."""
+    return [p for p in db.products.values() if p["kind"] == kind and not p["deleted"] and (admin or not p["hidden"])]
+
+
+# --- Rasmlar ---
+_file_ids = {}  # papkadagi rasmlar qayta yuklanmasin: path -> Telegram file_id
+
+
+def photo_for(p):
+    """(rasm, path): admin yuklagan -> papkadagi -> umumiy glass_ref -> no_photo."""
+    if p.get("file_id"):
+        return p["file_id"], None
+    image = p.get("image") or ""
+    path = (image and find_image(image)) or (image.startswith("glass_ref_") and find_image("glass_ref")) \
+        or find_image("no_photo")
+    return _file_ids.get(path) or FSInputFile(path), path
+
+
+def remember(path, m):
+    if path and isinstance(m, Message) and m.photo:
+        _file_ids[path] = m.photo[-1].file_id
+
+
+async def screen(msg: Message, text, markup=None, photo=None, path=None, edit=True):
+    """Bitta xabar ichida navigatsiya: imkon bo'lsa shu xabarni tahrirlaydi (matn<->matn, rasm<->rasm),
+    bo'lmasa eskisini o'chirib yangisini yuboradi. Chat toza qoladi."""
+    if edit:
+        try:
+            if photo is not None and msg.photo:
+                m = await msg.edit_media(InputMediaPhoto(media=photo, caption=text), reply_markup=markup)
+                remember(path, m)
+                return m
+            if photo is None and msg.text:
+                return await msg.edit_text(text, reply_markup=markup)
+        except TelegramBadRequest as e:
+            if "not modified" in str(e):
+                return msg
+        try:
+            await msg.delete()
+        except TelegramBadRequest:
+            pass
+    if photo is not None:
+        m = await msg.answer_photo(photo, caption=text, reply_markup=markup)
+        remember(path, m)
+        return m
+    return await msg.answer(text, reply_markup=markup)
 
 
 async def notify(bot: Bot, text, reply_markup=None):
@@ -135,60 +204,82 @@ async def notify(bot: Bot, text, reply_markup=None):
 # Admin handlerlari birinchi ro'yxatdan o'tadi, shunda admin hisoblash o'rtasida ham /admin ocha oladi.
 
 class AdminForm(StatesGroup):
-    price = State()
-    image = State()
+    edit = State()       # mahsulot nomi / narxi
+    photo = State()      # mahsulot rasmi
+    new_name = State()   # yangi mahsulot
+    new_price = State()
+    setting = State()    # umumiy sozlama
     broadcast = State()
 
 
 NOT_CMD = ~F.text.startswith("/")  # admin kutish holatida /start yozsa, u buyruq sifatida ishlasin
 BACK = ("Orqaga", "adm:menu", None, "⬅")
-ADMIN_TITLE = f"{pe('🛠')} <b>ADMIN PANEL</b>\n{LINE}\nBo'limni tanlang {pe('👇')}"
+
+
+def admin_title():
+    n = {k: len(items(k, admin=True)) for k in KINDS}
+    return (f"{pe('🛠')} <b>ADMIN PANEL</b>\n{LINE}\n"
+            f"🪟 Oyna turlari: <b>{n['glass']}</b>  ·  🎨 Ranglar: <b>{n['color']}</b>  ·  🔩 Furnitura: <b>{n['fitting']}</b>\n\n"
+            f"Bo'limni tanlang {pe('👇')}")
+
+
 ADMIN_MENU = grid([("Statistika", "adm:stat", "primary", "📊"), ("Eksport (Excel)", "adm:export", "primary", "📥"),
-                   ("Narxlar", "adm:prices", "primary", "💰"), ("Rasmlar", "adm:images", "primary", "🖼"),
+                   ("Oyna turlari", "adm:k:glass", "primary", "🪟"), ("Profil ranglari", "adm:k:color", "primary", "🎨"),
+                   ("Furnitura", "adm:k:fitting", "primary", "🔩"), ("Narx sozlamalari", "adm:set", "primary", "⚙"),
                    ("Xabar yuborish", "adm:bc", "success", "📢")], 2)
 
 
-async def show(cb: CallbackQuery, text, markup):
-    """Tugma bosilgan xabarni tahrirlaydi; bo'lmasa (rasm xabari va h.k.) yangisini yuboradi."""
-    try:
-        await cb.message.edit_text(text, reply_markup=markup)
-    except TelegramBadRequest:
-        await cb.message.answer(text, reply_markup=markup)
+async def ask(msg: Message, state: FSMContext, new_state, text, cancel, edit=True, **data):
+    """Admin'dan qiymat so'raydi. So'rov xabari id'si saqlanadi — javobdan keyin ikkalasi o'chiriladi."""
+    m = await screen(msg, text, grid([("Bekor qilish", cancel, "danger", "❌")]), edit=edit)
+    await state.set_state(new_state)
+    await state.update_data(prompt_id=m.message_id, cancel=cancel, **data)
+
+
+async def clean_input(msg: Message, state: FSMContext):
+    """Admin javobini va so'rov xabarini o'chiradi — chatda faqat yangi karta qoladi."""
+    d = await state.get_data()
+    for mid in (msg.message_id, d.get("prompt_id")):
+        try:
+            await msg.bot.delete_message(msg.chat.id, mid)
+        except Exception:
+            pass
+    await state.clear()
 
 
 @dp.message(Command("admin"), is_admin)
 async def admin(msg: Message, state: FSMContext):
     await state.clear()
-    await msg.answer(ADMIN_TITLE, reply_markup=ADMIN_MENU)
+    await msg.answer(admin_title(), reply_markup=ADMIN_MENU)
 
 
 @dp.callback_query(F.data == "adm:menu", is_admin)
 async def adm_menu(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer()
-    await show(cb, ADMIN_TITLE, ADMIN_MENU)
+    await screen(cb.message, admin_title(), ADMIN_MENU)
 
 
 # --- Statistika va eksport ---
+
+STATUS_NAME = {"new": "Kutilmoqda", "confirmed": "Tasdiqlangan", "cancelled": "Bekor qilingan"}
+
 
 @dp.callback_query(F.data == "adm:stat", is_admin)
 async def adm_stat(cb: CallbackQuery):
     await cb.answer()
     s = await db.stats()
-    await show(cb,
-               f"{pe('📊')} <b>STATISTIKA</b>\n{LINE}\n"
-               f"{pe('👤')} <b>Foydalanuvchilar:</b> {s['users']}\n"
-               f"      faol: {s['active_users']} · bugun yangi: {s['new_today']}\n\n"
-               f"{pe('🧮')} <b>Hisoblar:</b> bugun {s['calc_today']} · 7 kun {s['calc_week']} · jami {s['calc_all']}\n"
-               f"{pe('🛒')} <b>Buyurtmalar:</b> bugun {s['ord_today']} · 7 kun {s['ord_week']} · jami {s['ord_all']}\n\n"
-               f"{pe('⏳')} Kutilmoqda: <b>{s['st_new']}</b>\n"
-               f"{pe('✅')} Tasdiqlangan: <b>{s['st_confirmed']}</b>\n"
-               f"{pe('❌')} Bekor qilingan: <b>{s['st_cancelled']}</b>\n\n"
-               f"{pe('💰')} <b>Tasdiqlangan summa: {money(float(s['confirmed_usd']))} USD</b>",
-               grid([("Yangilash", "adm:stat", "primary", "🔄"), BACK], 2))
-
-
-STATUS_NAME = {"new": "Kutilmoqda", "confirmed": "Tasdiqlangan", "cancelled": "Bekor qilingan"}
+    await screen(cb.message,
+                 f"{pe('📊')} <b>STATISTIKA</b>\n{LINE}\n"
+                 f"{pe('👤')} <b>Foydalanuvchilar:</b> {s['users']}\n"
+                 f"      faol: {s['active_users']} · bugun yangi: {s['new_today']}\n\n"
+                 f"{pe('🧮')} <b>Hisoblar:</b> bugun {s['calc_today']} · 7 kun {s['calc_week']} · jami {s['calc_all']}\n"
+                 f"{pe('🛒')} <b>Buyurtmalar:</b> bugun {s['ord_today']} · 7 kun {s['ord_week']} · jami {s['ord_all']}\n\n"
+                 f"{pe('⏳')} Kutilmoqda: <b>{s['st_new']}</b>\n"
+                 f"{pe('✅')} Tasdiqlangan: <b>{s['st_confirmed']}</b>\n"
+                 f"{pe('❌')} Bekor qilingan: <b>{s['st_cancelled']}</b>\n\n"
+                 f"{pe('💰')} <b>Tasdiqlangan summa: {money(float(s['confirmed_usd']))} USD</b>",
+                 grid([("Yangilash", "adm:stat", "primary", "🔄"), BACK], 2))
 
 
 @dp.callback_query(F.data == "adm:export", is_admin)
@@ -203,136 +294,282 @@ async def adm_export(cb: CallbackQuery):
     for r in rows:
         w.writerow([r["id"], r["created_at"], r["user_id"], r["username"] or "", r["full_name"] or "",
                     r["customer_name"] or "", r["phone"] or "", r["width"], r["height"], r["count"],
-                    P.GLASS.get(r["glass"], r["glass"]), P.COLORS.get(r["color"], r["color"]),
-                    P.FITTINGS.get(r["fitting"], r["fitting"]), r["fitting_count"], r["handle"] or "yo'q",
-                    "ha" if r["delivery"] else "yo'q", r["usd"], r["rate"], r["total_sum"], r["ordered_at"] or "",
-                    STATUS_NAME.get(r["status"], "Faqat hisob"), r["status_by"] or ""])
+                    pname(r["glass"]), pname(r["color"]), pname(r["fitting"]), r["fitting_count"],
+                    r["handle"] or "yo'q", "ha" if r["delivery"] else "yo'q", r["usd"], r["rate"], r["total_sum"],
+                    r["ordered_at"] or "", STATUS_NAME.get(r["status"], "Faqat hisob"), r["status_by"] or ""])
     data = buf.getvalue().encode("utf-8-sig")  # BOM — Excel o'zbekcha harflarni to'g'ri ochadi
     await cb.message.answer_document(BufferedInputFile(data, "hisoblar.csv"), caption=f"Jami: {len(rows)} ta hisob")
 
 
-# --- Narxlar ---
+# --- Katalog: ro'yxat ---
 
-def price_value(key):
-    v = db.prices.get(key)
-    return "yashirin" if v is None else f"{v:g}"
-
-
-def price_name(key):
-    if key.startswith("glass."):
-        return "🪟 " + P.GLASS[key[6:]]
-    if key.startswith("fit."):
-        return "🔩 " + P.FITTINGS[key[4:]]
-    return "⚙️ " + P.DEFAULTS[key][0].split(",")[0]
+def fmt_price(p):
+    return f"{p['price']:g} {KINDS[p['kind']]['unit']}" if KINDS[p["kind"]]["unit"] and p["price"] is not None else ""
 
 
-def prices_menu():
-    return grid([(f"{price_name(k)}: {price_value(k)}", f"adm:p:{k}") for k in P.DEFAULTS] + [BACK])
+async def show_kind(msg: Message, kind, edit=True):
+    k = KINDS[kind]
+    lst = items(kind, admin=True)
+    hidden = sum(p["hidden"] for p in lst)
+    text = (f"{k['icon']} <b>{k['title'].upper()}</b>\n{LINE}\n"
+            f"Jami: <b>{len(lst)}</b>" + (f"  ·  yashirin: <b>{hidden}</b> 🙈" if hidden else "") + "\n\n"
+            f"Tahrirlash uchun ustiga bosing {pe('👇')}")
+    buttons = [(("🙈 " if p["hidden"] else "") + p["name"] + (f" · {p['price']:g}$" if k["unit"] else ""),
+                f"adm:pr:{p['key']}") for p in lst]
+    markup = grid(buttons, 2)
+    markup.inline_keyboard += grid([(f"Yangi {k['one']} qo'shish", f"adm:new:{kind}", "success", "➕"), BACK]).inline_keyboard
+    await screen(msg, text, markup, edit=edit)
 
 
-PRICES_TEXT = f"{pe('💰')} <b>NARXLAR</b>\n{LINE}\nOyna — USD/m², furnitura — USD/dona.\nO'zgartirish uchun tanlang {pe('👇')}"
-CANCEL_PRICE = grid([("Bekor qilish", "adm:prices", "danger", "❌")])
-
-
-@dp.callback_query(F.data == "adm:prices", is_admin)
-async def adm_prices(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await cb.answer()
-    await show(cb, PRICES_TEXT, prices_menu())
-
-
-@dp.callback_query(F.data.startswith("adm:p:"), is_admin)
-async def adm_price_pick(cb: CallbackQuery, state: FSMContext):
-    key = cb.data[6:]
-    if key not in P.DEFAULTS:
+@dp.callback_query(F.data.startswith("adm:k:"), is_admin)
+async def adm_kind(cb: CallbackQuery, state: FSMContext):
+    kind = cb.data[6:]
+    if kind not in KINDS:
         return await cb.answer()
-    await cb.answer()
-    await state.set_state(AdminForm.price)
-    await state.update_data(price_key=key)
-    await show(cb, f"{pe('✍')} <b>{P.DEFAULTS[key][0]}</b>\nHozirgi qiymat: <b>{price_value(key)}</b>\n\nYangi qiymatni yozing:"
-               + ("\n<i>(Mijozlardan yashirish uchun: <code>yoq</code>)</i>" if key.startswith("glass.") else ""),
-               CANCEL_PRICE)
-
-
-@dp.message(AdminForm.price, is_admin, NOT_CMD)
-async def adm_price_set(msg: Message, state: FSMContext):
-    key = (await state.get_data())["price_key"]
-    raw = (msg.text or "").strip().replace(",", ".").replace(" ", "").lower()
-    if raw == "yoq" and key.startswith("glass."):
-        value = None
-    else:
-        try:
-            value = float(raw)
-        except ValueError:
-            return await msg.answer("❌ Son yozing, masalan 22 yoki 5.5", reply_markup=CANCEL_PRICE)
-        if not 0 <= value < 10_000_000:
-            return await msg.answer("❌ Qiymat 0 dan kichik bo'lmasin.", reply_markup=CANCEL_PRICE)
-    old = price_value(key)
-    await db.set_price(key, value)
-    await state.clear()
-    await msg.answer(f"{pe('✅')} {P.DEFAULTS[key][0]}: {old} → <b>{price_value(key)}</b>\n\n" + PRICES_TEXT,
-                     reply_markup=prices_menu())
-
-
-# --- Rasmlar ---
-
-IMAGE_KEYS = {**{f"glass_{k}": "🪟 " + n for k, n in P.GLASS.items()},
-              **{f"color_{k}": "🎨 " + n for k, n in P.COLORS.items()}}
-IMAGES_TEXT = (f"{pe('🖼')} <b>RASMLAR</b>\n{LINE}\n✅ — botdan yuklangan · 📁 — papkadagi · ➖ — rasm yo'q\n"
-               f"Almashtirish uchun tanlang {pe('👇')}")
-CANCEL_IMAGE = ("Bekor qilish", "adm:images", "danger", "❌")
-
-
-def images_menu():
-    def mark(k):
-        return "✅" if k in db.images else "📁" if find_image(k) else "➖"
-    return grid([(f"{mark(k)} {n}", f"adm:i:{k}") for k, n in IMAGE_KEYS.items()] + [BACK], 2)
-
-
-@dp.callback_query(F.data == "adm:images", is_admin)
-async def adm_images(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer()
-    await show(cb, IMAGES_TEXT, images_menu())
+    await show_kind(cb.message, kind)
 
 
-@dp.callback_query(F.data.startswith("adm:i:"), is_admin)
-async def adm_image_pick(cb: CallbackQuery, state: FSMContext):
-    key = cb.data[6:]
-    if key not in IMAGE_KEYS:
+# --- Katalog: bitta mahsulot ---
+
+async def show_product(msg: Message, key, edit=True):
+    p = db.products[key]
+    k = KINDS[p["kind"]]
+    lines = [f"{k['icon']} <b>{html.escape(p['name'])}</b>", LINE]
+    if k["unit"]:
+        lines.append(f"{pe('💰')} Narx: <b>{fmt_price(p)}</b>")
+    if k["image"]:
+        src = "botdan yuklangan" if p["file_id"] else "papkadagi rasm" if p["image"] and find_image(p["image"]) else "yo'q"
+        lines.append(f"{pe('🖼')} Rasm: <b>{src}</b>")
+    lines.append(f"{'🙈' if p['hidden'] else '👁'} Holat: <b>{'yashirin — mijozlar ko‘rmaydi' if p['hidden'] else 'mijozlarga ko‘rinadi'}</b>")
+    lines.append(f"\nNimani o'zgartiramiz? {pe('👇')}")
+    buttons = [("Nomi", f"adm:e:name:{key}", "primary", "✏")]
+    if k["unit"]:
+        buttons.append(("Narxi", f"adm:e:price:{key}", "primary", "💰"))
+    if k["image"]:
+        buttons.append(("Rasmi", f"adm:ph:{key}", "primary", "🖼"))
+    buttons += [("Ko'rsatish" if p["hidden"] else "Yashirish", f"adm:hide:{key}", None, "👁" if p["hidden"] else "🙈"),
+                ("O'chirish", f"adm:del:{key}", "danger", "🗑"),
+                ("Orqaga", f"adm:k:{p['kind']}", None, "⬅")]
+    photo, path = photo_for(p) if k["image"] else (None, None)
+    await screen(msg, "\n".join(lines), grid(buttons, 2), photo, path, edit=edit)
+
+
+@dp.callback_query(F.data.startswith("adm:pr:"), is_admin)
+async def adm_product(cb: CallbackQuery, state: FSMContext):
+    key = cb.data[7:]
+    if key not in db.products:
         return await cb.answer()
-    await cb.answer()
-    await state.set_state(AdminForm.image)
-    await state.update_data(image_key=key)
-    buttons = [("Yuklangan rasmni o'chirish", f"adm:idel:{key}", "danger", "🗑")] if key in db.images else []
-    photo, path = photo_for(key)
-    m = await cb.message.answer_photo(photo, caption=f"Hozirgi rasm: <b>{IMAGE_KEYS[key]}</b>\n\n"
-                                      "Yangi rasmni yuboring (fayl emas, <b>rasm</b> sifatida):",
-                                      reply_markup=grid(buttons + [CANCEL_IMAGE]))
-    remember(path, m)
-
-
-@dp.message(AdminForm.image, F.photo, is_admin)
-async def adm_image_set(msg: Message, state: FSMContext):
-    key = (await state.get_data())["image_key"]
-    await db.set_image(key, msg.photo[-1].file_id)
     await state.clear()
-    await msg.answer(f"{pe('✅')} {IMAGE_KEYS[key]} rasmi saqlandi.\n\n" + IMAGES_TEXT, reply_markup=images_menu())
+    await cb.answer()
+    await show_product(cb.message, key)
 
 
-@dp.message(AdminForm.image, is_admin, NOT_CMD)
-async def adm_image_wrong(msg: Message):
-    await msg.answer("❌ Rasm yuboring (galereyadan, oddiy rasm sifatida).", reply_markup=grid([CANCEL_IMAGE]))
+def last_visible(key):
+    """Mijozga ko'rinadigan oxirgi mahsulotmi (uni yashirish/o'chirish mumkin emas)."""
+    p = db.products[key]
+    return not p["hidden"] and len(items(p["kind"])) <= 1
 
 
-@dp.callback_query(F.data.startswith("adm:idel:"), is_admin)
-async def adm_image_delete(cb: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("adm:hide:"), is_admin)
+async def adm_hide(cb: CallbackQuery):
     key = cb.data[9:]
-    await db.delete_image(key)
+    p = db.products.get(key)
+    if not p:
+        return await cb.answer()
+    if last_visible(key):
+        return await cb.answer("Mijozlar uchun kamida bitta variant ko'rinib turishi kerak.", show_alert=True)
+    await db.update_product(key, "hidden", not p["hidden"])
+    await cb.answer("👁 Mijozlarga ko'rinadi" if not p["hidden"] else "🙈 Yashirildi")
+    await show_product(cb.message, key)
+
+
+@dp.callback_query(F.data.startswith("adm:del:"), is_admin)
+async def adm_delete(cb: CallbackQuery):
+    key = cb.data[8:]
+    p = db.products.get(key)
+    if not p:
+        return await cb.answer()
+    if last_visible(key):
+        return await cb.answer("Mijozlar uchun kamida bitta variant qolishi kerak.", show_alert=True)
+    await cb.answer()
+    await screen(cb.message, f"🗑 <b>{html.escape(p['name'])}</b> o'chirilsinmi?\n\n"
+                             f"<i>Eski buyurtmalarda nomi saqlanib qoladi.</i>",
+                 grid([("Ha, o'chirish", f"adm:delok:{key}", "danger", "🗑"), ("Yo'q", f"adm:pr:{key}", None, "⬅")], 2))
+
+
+@dp.callback_query(F.data.startswith("adm:delok:"), is_admin)
+async def adm_delete_ok(cb: CallbackQuery):
+    key = cb.data[10:]
+    p = db.products.get(key)
+    if not p or p["deleted"]:
+        return await cb.answer()
+    if last_visible(key):
+        return await cb.answer("Mijozlar uchun kamida bitta variant qolishi kerak.", show_alert=True)
+    await db.update_product(key, "deleted", True)
+    await cb.answer(f"🗑 {p['name']} o'chirildi")
+    await show_kind(cb.message, p["kind"])
+
+
+# nomi / narxi
+@dp.callback_query(F.data.startswith("adm:e:"), is_admin)
+async def adm_edit(cb: CallbackQuery, state: FSMContext):
+    _, _, field, key = cb.data.split(":")
+    p = db.products.get(key)
+    if not p or field not in ("name", "price"):
+        return await cb.answer()
+    await cb.answer()
+    cur = html.escape(p["name"]) if field == "name" else fmt_price(p)
+    what = "nomini" if field == "name" else f"narxini ({KINDS[p['kind']]['unit']})"
+    await ask(cb.message, state, AdminForm.edit, f"{pe('✏')} <b>{html.escape(p['name'])}</b>\nHozirgi: <b>{cur}</b>\n\n"
+              f"Yangi {what} yozing:", f"adm:pr:{key}", key=key, field=field)
+
+
+def valid_name(text):
+    text = " ".join((text or "").split())
+    return text if 1 <= len(text) <= 40 else None
+
+
+@dp.message(AdminForm.edit, is_admin, NOT_CMD)
+async def adm_edit_set(msg: Message, state: FSMContext):
+    d = await state.get_data()
+    value = valid_name(msg.text) if d["field"] == "name" else parse_price(msg.text)
+    if value is None:
+        return await msg.answer("❌ Nom 1–40 belgi bo'lsin." if d["field"] == "name" else "❌ Son yozing, masalan 22 yoki 5.5")
+    await db.update_product(d["key"], d["field"], value)
+    await clean_input(msg, state)
+    await show_product(msg, d["key"], edit=False)
+
+
+# rasmi
+@dp.callback_query(F.data.startswith("adm:ph:"), is_admin)
+async def adm_photo(cb: CallbackQuery, state: FSMContext):
+    key = cb.data[7:]
+    p = db.products.get(key)
+    if not p:
+        return await cb.answer()
+    await cb.answer()
+    await ask_photo(cb.message, state, key)
+
+
+async def ask_photo(msg: Message, state: FSMContext, key, edit=True, new=False):
+    p = db.products[key]
+    buttons = [("Rasmsiz davom etish", f"adm:pr:{key}", None, "➡")] if new else []
+    if p["file_id"]:
+        buttons.append(("Yuklangan rasmni o'chirish", f"adm:phdel:{key}", "danger", "🗑"))
+    buttons.append(("Bekor qilish", f"adm:pr:{key}", "danger", "❌") if not new else None)
+    m = await screen(msg, f"{pe('🖼')} <b>{html.escape(p['name'])}</b>\n\nYangi rasmni yuboring "
+                          f"(fayl emas, oddiy <b>rasm</b> sifatida):", grid([b for b in buttons if b]), edit=edit)
+    await state.set_state(AdminForm.photo)
+    await state.update_data(prompt_id=m.message_id, key=key)
+
+
+@dp.message(AdminForm.photo, F.photo, is_admin)
+async def adm_photo_set(msg: Message, state: FSMContext):
+    key = (await state.get_data())["key"]
+    await db.update_product(key, "file_id", msg.photo[-1].file_id)
+    await clean_input(msg, state)
+    await show_product(msg, key, edit=False)
+
+
+@dp.message(AdminForm.photo, is_admin, NOT_CMD)
+async def adm_photo_wrong(msg: Message):
+    await msg.answer("❌ Rasm yuboring (galereyadan, oddiy rasm sifatida).")
+
+
+@dp.callback_query(F.data.startswith("adm:phdel:"), is_admin)
+async def adm_photo_delete(cb: CallbackQuery, state: FSMContext):
+    key = cb.data[10:]
+    if key not in db.products:
+        return await cb.answer()
+    await db.update_product(key, "file_id", None)
     await state.clear()
-    await cb.answer("O'chirildi")
-    await cb.message.answer(f"🗑 {IMAGE_KEYS.get(key, key)}: endi papkadagi rasm ishlatiladi.\n\n" + IMAGES_TEXT,
-                            reply_markup=images_menu())
+    await cb.answer("Rasm o'chirildi")
+    await show_product(cb.message, key)
+
+
+# yangi mahsulot: nom -> narx (bo'lsa) -> rasm (bo'lsa)
+@dp.callback_query(F.data.startswith("adm:new:"), is_admin)
+async def adm_new(cb: CallbackQuery, state: FSMContext):
+    kind = cb.data[8:]
+    if kind not in KINDS:
+        return await cb.answer()
+    await cb.answer()
+    await state.clear()
+    await ask(cb.message, state, AdminForm.new_name, f"{pe('➕')} <b>Yangi {KINDS[kind]['one']}</b>\n\nNomini yozing:",
+              f"adm:k:{kind}", kind=kind)
+
+
+@dp.message(AdminForm.new_name, is_admin, NOT_CMD)
+async def adm_new_name(msg: Message, state: FSMContext):
+    name = valid_name(msg.text)
+    if not name:
+        return await msg.answer("❌ Nom 1–40 belgi bo'lsin.")
+    d = await state.get_data()
+    kind = d["kind"]
+    if KINDS[kind]["unit"]:
+        await clean_input(msg, state)
+        return await ask(msg, state, AdminForm.new_price, f"{pe('➕')} <b>{html.escape(name)}</b>\n\n"
+                         f"Narxini yozing ({KINDS[kind]['unit']}):", f"adm:k:{kind}", edit=False, kind=kind, name=name)
+    await finish_new(msg, state, kind, name, None)
+
+
+@dp.message(AdminForm.new_price, is_admin, NOT_CMD)
+async def adm_new_price(msg: Message, state: FSMContext):
+    price = parse_price(msg.text)
+    if price is None:
+        return await msg.answer("❌ Son yozing, masalan 22 yoki 5.5")
+    d = await state.get_data()
+    await finish_new(msg, state, d["kind"], d["name"], price)
+
+
+async def finish_new(msg: Message, state: FSMContext, kind, name, price):
+    key = await db.add_product(kind, name, price)
+    await clean_input(msg, state)
+    if KINDS[kind]["image"]:
+        return await ask_photo(msg, state, key, edit=False, new=True)
+    await show_product(msg, key, edit=False)
+
+
+# --- Umumiy narx sozlamalari ---
+
+def settings_menu():
+    return grid([(f"{label.split(',')[0]}: {db.settings[k]:g}", f"adm:s:{k}") for k, (label, _) in P.SETTINGS.items()]
+                + [BACK])
+
+
+SETTINGS_TEXT = f"{pe('⚙')} <b>NARX SOZLAMALARI</b>\n{LINE}\nHisoblashdagi umumiy narxlar.\nO'zgartirish uchun ustiga bosing {pe('👇')}"
+
+
+@dp.callback_query(F.data == "adm:set", is_admin)
+async def adm_settings(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.answer()
+    await screen(cb.message, SETTINGS_TEXT, settings_menu())
+
+
+@dp.callback_query(F.data.startswith("adm:s:"), is_admin)
+async def adm_setting_pick(cb: CallbackQuery, state: FSMContext):
+    key = cb.data[6:]
+    if key not in P.SETTINGS:
+        return await cb.answer()
+    await cb.answer()
+    await ask(cb.message, state, AdminForm.setting, f"{pe('✏')} <b>{P.SETTINGS[key][0]}</b>\n"
+              f"Hozirgi: <b>{db.settings[key]:g}</b>\n\nYangi qiymatni yozing:", "adm:set", key=key)
+
+
+@dp.message(AdminForm.setting, is_admin, NOT_CMD)
+async def adm_setting_set(msg: Message, state: FSMContext):
+    value = parse_price(msg.text)
+    if value is None:
+        return await msg.answer("❌ Son yozing, masalan 6 yoki 0.8")
+    key = (await state.get_data())["key"]
+    old = db.settings[key]
+    await db.set_setting(key, value)
+    await clean_input(msg, state)
+    await msg.answer(f"{pe('✅')} {P.SETTINGS[key][0]}: {old:g} → <b>{value:g}</b>\n\n" + SETTINGS_TEXT,
+                     reply_markup=settings_menu())
 
 
 # --- Ommaviy xabar ---
@@ -340,9 +577,9 @@ async def adm_image_delete(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "adm:bc", is_admin)
 async def adm_bc(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
-    await state.set_state(AdminForm.broadcast)
-    await show(cb, f"{pe('📢')} Barcha foydalanuvchilarga yuboriladigan xabarni yuboring (matn, rasm, video — har qanday):",
-               grid([("Bekor qilish", "adm:menu", "danger", "❌")]))
+    await ask(cb.message, state, AdminForm.broadcast,
+              f"{pe('📢')} Barcha foydalanuvchilarga yuboriladigan xabarni yuboring (matn, rasm, video — har qanday):",
+              "adm:menu")
 
 
 @dp.message(AdminForm.broadcast, is_admin, NOT_CMD)
@@ -406,9 +643,9 @@ def order_body(o):
         f"<blockquote>"
         f"📐 <b>O'lcham:</b> {o['width']} × {o['height']} mm\n"
         f"🔢 <b>Soni:</b> {o['count']} dona\n"
-        f"🪟 <b>Oyna:</b> {P.GLASS.get(o['glass'], o['glass'])}\n"
-        f"{pe('🎨')} <b>Profil rangi:</b> {P.COLORS.get(o['color'], o['color'])}\n"
-        f"🔩 <b>Furnitura:</b> {P.FITTINGS.get(o['fitting'], o['fitting'])} — {o['fitting_count']} dona/fasad\n"
+        f"🪟 <b>Oyna:</b> {html.escape(pname(o['glass']))}\n"
+        f"{pe('🎨')} <b>Profil rangi:</b> {html.escape(pname(o['color']))}\n"
+        f"🔩 <b>Furnitura:</b> {html.escape(pname(o['fitting']))} — {o['fitting_count']} dona/fasad\n"
         f"{pe('✋')} <b>Ruchka:</b> {handle}\n"
         f"🚚 <b>Yetkazish:</b> {delivery}"
         f"</blockquote>\n\n"
@@ -423,13 +660,13 @@ def group_card(o):
     icon, title, tag = STATUS[o["status"]]
     tg = (f"@{o['username']}" if o["username"]
           else f'<a href="tg://user?id={o["user_id"]}">{html.escape(o["full_name"] or "profil")}</a>')
-    text = (f"{pe(icon)}{pe(icon)} <b>{title} #{o['id']}</b> {pe(icon)}{pe(icon)}\n{LINE}\n"
+    text = (f"{pe(icon)} <b>{title} #{o['id']}</b>\n{LINE}\n"
             f"{order_body(o)}\n{LINE}\n"
             f"{pe('💬')} <b>Telegram:</b> {tg}\n"
             f"{pe('⏰')} <b>Vaqt:</b> {o['created_str']}")
     if o["status"] != "new":
         who = "Tasdiqladi" if o["status"] == "confirmed" else "Bekor qildi"
-        text += f"\n{pe(icon)} <b>{who}:</b> {html.escape(o['status_by'])} · {o['status_str']}"
+        text += f"\n{pe('👤')} <b>{who}:</b> {html.escape(o['status_by'])} · {o['status_str']}"
     return text + f"\n\n{tag} #buyurtma{o['id']}"
 
 
@@ -477,40 +714,22 @@ async def group_decision(cb: CallbackQuery):
 # ================= KARUSEL =================
 
 CAROUSEL_TITLE = {"glass": f"{pe('✨')} <b>Oyna turini</b> tanlang", "color": f"{pe('🎨')} <b>Profil rangini</b> tanlang"}
-_file_ids = {}  # papkadagi rasmlar qayta yuklanmasin: path -> Telegram file_id
-
-
-def photo_for(image):
-    """(rasm, path): bazadagi (admin yuklagan) -> papkadagi -> umumiy glass_ref -> no_photo."""
-    if image in db.images:
-        return db.images[image], None
-    path = find_image(image) or (image.startswith("glass_ref_") and find_image("glass_ref")) or find_image("no_photo")
-    return _file_ids.get(path) or FSInputFile(path), path
-
-
-def remember(path, m):
-    if path and isinstance(m, Message) and m.photo:
-        _file_ids[path] = m.photo[-1].file_id
-
-
-def carousel_items(kind):
-    if kind == "glass":
-        return [(k, n, f"glass_{k}") for k, n in P.GLASS.items() if db.prices.get(f"glass.{k}") is not None]
-    return [(k, n, f"color_{k}") for k, n in P.COLORS.items()]
 
 
 def carousel(kind, i):
     """Bitta xabar: rasm, tagida nomi, ◀️ Tanlash ▶️. Tanlash callback'i 'glass:key' / 'color:key'."""
-    items = carousel_items(kind)
-    i %= len(items)
-    key, name, image = items[i]
-    markup = grid([("◀️", f"car:{kind}:{i - 1}"), ("Tanlash", f"{kind}:{key}", "success", "✅"),
+    lst = items(kind)
+    i %= len(lst)
+    p = lst[i]
+    markup = grid([("◀️", f"car:{kind}:{i - 1}"), ("Tanlash", f"{kind}:{p['key']}", "success", "✅"),
                    ("▶️", f"car:{kind}:{i + 1}")], 3)
-    caption = f"{CAROUSEL_TITLE[kind]}:\n\n<b>{name}</b>  ·  {i + 1}/{len(items)}"
-    return *photo_for(image), caption, markup
+    caption = f"{CAROUSEL_TITLE[kind]}:\n\n<b>{html.escape(p['name'])}</b>  ·  {i + 1}/{len(lst)}"
+    return *photo_for(p), caption, markup
 
 
 async def send_carousel(msg: Message, kind):
+    if not items(kind):
+        return await msg.answer(f"Kechirasiz, hozircha variantlar yo'q. Bog'lanish: {CONTACT}")
     photo, path, caption, markup = carousel(kind, 0)
     remember(path, await msg.answer_photo(photo, caption=caption, reply_markup=markup))
 
@@ -518,12 +737,19 @@ async def send_carousel(msg: Message, kind):
 @dp.callback_query(F.data.startswith("car:"))
 async def carousel_nav(cb: CallbackQuery):
     _, kind, i = cb.data.split(":")
+    if not items(kind):
+        return await cb.answer()
     photo, path, caption, markup = carousel(kind, int(i))
     try:
         remember(path, await cb.message.edit_media(InputMediaPhoto(media=photo, caption=caption), reply_markup=markup))
     except TelegramBadRequest:  # tez bosilganda "message is not modified"
         pass
     await cb.answer()
+
+
+def visible(kind, key):
+    p = db.products.get(key)
+    return p if p and p["kind"] == kind and not p["hidden"] and not p["deleted"] else None
 
 
 # ================= 1-2. O'lchamlar va soni =================
@@ -577,26 +803,26 @@ async def count(msg: Message, state: FSMContext):
 
 @dp.callback_query(Form.glass, F.data.startswith("glass:"))
 async def glass(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[1]
-    if key not in P.GLASS or db.prices.get(f"glass.{key}") is None:
+    p = visible("glass", cb.data.split(":")[1])
+    if not p:
         return await cb.answer("Bu variant hozir mavjud emas", show_alert=True)
-    await state.update_data(glass=key)
-    await cb.answer(P.GLASS[key])
-    await cb.message.edit_caption(caption=f"{pe('✅')} Oyna: <b>{P.GLASS[key]}</b>", reply_markup=None)
+    await state.update_data(glass=p["key"])
+    await cb.answer(p["name"])
+    await cb.message.edit_caption(caption=f"{pe('✅')} Oyna: <b>{html.escape(p['name'])}</b>", reply_markup=None)
     await send_carousel(cb.message, "color")
     await state.set_state(Form.color)
 
 
 @dp.callback_query(Form.color, F.data.startswith("color:"))
 async def color(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[1]
-    if key not in P.COLORS:
-        return await cb.answer()
-    await state.update_data(color=key)
-    await cb.answer(P.COLORS[key])
-    await cb.message.edit_caption(caption=f"{pe('✅')} Profil rangi: <b>{P.COLORS[key]}</b>", reply_markup=None)
+    p = visible("color", cb.data.split(":")[1])
+    if not p:
+        return await cb.answer("Bu variant hozir mavjud emas", show_alert=True)
+    await state.update_data(color=p["key"])
+    await cb.answer(p["name"])
+    await cb.message.edit_caption(caption=f"{pe('✅')} Profil rangi: <b>{html.escape(p['name'])}</b>", reply_markup=None)
     await cb.message.answer("🔩 <b>Furnitura turini</b> tanlang:",
-                            reply_markup=grid([(name, f"fit:{k}", "primary") for k, name in P.FITTINGS.items()], 2))
+                            reply_markup=grid([(f["name"], f"fit:{f['key']}", "primary") for f in items("fitting")], 2))
     await state.set_state(Form.fitting)
 
 
@@ -604,12 +830,12 @@ async def color(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(Form.fitting, F.data.startswith("fit:"))
 async def fitting(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[1]
-    if key not in P.FITTINGS:
-        return await cb.answer()
-    await state.update_data(fitting=key)
+    p = visible("fitting", cb.data.split(":")[1])
+    if not p:
+        return await cb.answer("Bu variant hozir mavjud emas", show_alert=True)
+    await state.update_data(fitting=p["key"])
     await cb.answer()
-    await cb.message.edit_text(f"{pe('✅')} Furnitura: <b>{P.FITTINGS[key]}</b>")
+    await cb.message.edit_text(f"{pe('✅')} Furnitura: <b>{html.escape(p['name'])}</b>")
     await cb.message.answer("🔢 <b>Har bir fasadda nechta</b> furnitura kerak? <i>(0–20)</i>")
     await state.set_state(Form.fitting_count)
 
@@ -629,7 +855,7 @@ async def fitting_count(msg: Message, state: FSMContext):
 
 async def ask_delivery(msg: Message, state: FSMContext):
     await msg.answer(f"🚚 <b>Yetkazib berish</b> kerakmi?",
-                     reply_markup=grid([(f"Shahar bo'ylab — {money(round(db.prices['delivery']))} so'm", "dlv:yes",
+                     reply_markup=grid([(f"Shahar bo'ylab — {money(round(db.settings['delivery']))} so'm", "dlv:yes",
                                          "primary", "🚚"),
                                         ("O'zim olib ketaman", "dlv:no", "primary", "🏠")]))
     await state.set_state(Form.delivery)
@@ -672,9 +898,12 @@ async def delivery(cb: CallbackQuery, state: FSMContext):
 
     d = await state.get_data()
     rate = await asyncio.to_thread(get_rate)
-    p = db.prices
-    usd = P.calc_usd(p, d["width"], d["height"], d["count"], d["glass"], d["fitting"], d["fitting_count"], d["side"])
-    total_sum = P.calc_sum(p, usd, rate, dlv)
+    s = db.settings
+    # mahsulot hisob o'rtasida o'chirilgan bo'lsa ham oxirgi ma'lum narx bilan hisoblanadi
+    glass_price = db.products[d["glass"]]["price"] or 0
+    fitting_price = db.products[d["fitting"]]["price"] or 0
+    usd = P.calc_usd(s, d["width"], d["height"], d["count"], glass_price, fitting_price, d["fitting_count"], d["side"])
+    total_sum = P.calc_sum(s, usd, rate, dlv)
     d.update(delivery=dlv)
     await db.upsert_user(cb.from_user)
     d["calc_id"] = await db.add_calc(cb.from_user.id, d, usd, rate, total_sum)
