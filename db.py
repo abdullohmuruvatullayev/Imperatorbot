@@ -61,9 +61,10 @@ images: dict = {}  # key -> file_id
 
 async def init(dsn):
     global pool
-    # Toshkent vaqti (UTC+5, yozgi vaqt yo'q) — "bugun" statistikasi va eksport sanalari uchun
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5,
-                                     init=lambda c: c.execute("SET TIME ZONE INTERVAL '+05:00' HOUR TO MINUTE"))
+    # Toshkent vaqti (UTC+5, yozgi vaqt yo'q): sana/vaqt chiqishi va "bugun" statistikasi uchun.
+    # server_settings orqali — pool ulanishni qaytarganda qiladigan RESET ALL buni o'chirmaydi.
+    # '<+05>-05' POSIX yozuvi: tzdata kerak emas, ishorasi teskari bo'lishi POSIX qoidasi.
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5, server_settings={"timezone": "<+05>-05"})
     async with pool.acquire() as c:
         await c.execute(SCHEMA)
         await c.executemany("INSERT INTO prices(key, value) VALUES($1, $2) ON CONFLICT DO NOTHING",
