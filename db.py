@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS images (
 -- mavjud bazaga ham qo'shiladi
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS customer_name TEXT;
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE calculations ADD COLUMN IF NOT EXISTS status TEXT;        -- NULL | new | confirmed | cancelled
+ALTER TABLE calculations ADD COLUMN IF NOT EXISTS status_by TEXT;     -- qaysi admin
+ALTER TABLE calculations ADD COLUMN IF NOT EXISTS status_at TIMESTAMPTZ;
+UPDATE calculations SET status = 'new' WHERE ordered_at IS NOT NULL AND status IS NULL;
 CREATE INDEX IF NOT EXISTS calculations_created_at ON calculations(created_at);
 """
 
@@ -103,9 +107,28 @@ async def add_calc(user_id, d, usd, rate, total_sum):
         d["side"], d["delivery"], usd, rate, total_sum)
 
 
-async def mark_ordered(calc_id, customer_name, phone):
-    await pool.execute("UPDATE calculations SET ordered_at = now(), customer_name = $2, phone = $3 WHERE id = $1",
-                       calc_id, customer_name, phone)
+async def set_contact(calc_id, customer_name, phone):
+    await pool.execute("UPDATE calculations SET customer_name = $2, phone = $3 WHERE id = $1", calc_id, customer_name, phone)
+
+
+async def submit_order(calc_id):
+    """Mijoz tasdiqladi. Ikki marta bosilsa ikkinchisi None qaytaradi."""
+    return await pool.fetchval("UPDATE calculations SET ordered_at = now(), status = 'new' "
+                               "WHERE id = $1 AND ordered_at IS NULL RETURNING id", calc_id)
+
+
+async def set_status(calc_id, status, by):
+    """Admin qarori. Faqat 'new' holatdagisi o'zgaradi — ikki admin bir vaqtda bossa ham bittasi o'tadi."""
+    return await pool.fetchval("UPDATE calculations SET status = $2, status_by = $3, status_at = now() "
+                               "WHERE id = $1 AND status = 'new' RETURNING id", calc_id, status, by)
+
+
+async def get_order(calc_id):
+    return await pool.fetchrow("""
+        SELECT c.*, u.username, u.full_name,
+               to_char(c.created_at, 'DD.MM.YYYY HH24:MI') AS created_str,
+               to_char(c.status_at, 'DD.MM.YYYY HH24:MI') AS status_str
+        FROM calculations c JOIN users u ON u.id = c.user_id WHERE c.id = $1""", calc_id)
 
 
 async def add_comment(user_id, text):
@@ -124,7 +147,10 @@ async def stats():
           count(ordered_at) FILTER (WHERE created_at >= current_date)    AS ord_today,
           count(ordered_at) FILTER (WHERE created_at >= now() - interval '7 days') AS ord_week,
           count(ordered_at)                                               AS ord_all,
-          coalesce(sum(usd) FILTER (WHERE ordered_at IS NOT NULL), 0)     AS ord_usd
+          count(*) FILTER (WHERE status = 'new')                          AS st_new,
+          count(*) FILTER (WHERE status = 'confirmed')                    AS st_confirmed,
+          count(*) FILTER (WHERE status = 'cancelled')                    AS st_cancelled,
+          coalesce(sum(usd) FILTER (WHERE status = 'confirmed'), 0)       AS confirmed_usd
         FROM calculations""")
 
 
@@ -133,7 +159,7 @@ async def export_rows():
         SELECT c.id, to_char(c.created_at, 'YYYY-MM-DD HH24:MI') AS created_at, u.id AS user_id, u.username, u.full_name, c.customer_name, coalesce(c.phone, u.phone) AS phone,
                c.width, c.height, c.count, c.glass, c.color, c.fitting, c.fitting_count, c.handle,
                c.delivery, c.usd, c.rate, c.total_sum,
-               to_char(c.ordered_at, 'YYYY-MM-DD HH24:MI') AS ordered_at
+               to_char(c.ordered_at, 'YYYY-MM-DD HH24:MI') AS ordered_at, c.status, c.status_by
         FROM calculations c JOIN users u ON u.id = c.user_id ORDER BY c.id""")
 
 
