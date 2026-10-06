@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS images (
     file_id TEXT NOT NULL       -- Telegram file_id (rasm Telegram serverida turadi)
 );
 -- mavjud bazaga ham qo'shiladi
+ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_name TEXT;   -- buyurtmada kiritilgan ism-familiya
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS customer_name TEXT;
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS phone TEXT;
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS status TEXT;        -- NULL | new | confirmed | cancelled
@@ -94,8 +95,14 @@ async def upsert_user(u):
         u.id, u.username, u.full_name)
 
 
-async def set_phone(user_id, phone):
-    await pool.execute("UPDATE users SET phone = $2 WHERE id = $1", user_id, phone)
+async def save_user_contact(user_id, customer_name, phone):
+    await pool.execute("UPDATE users SET customer_name = $2, phone = $3 WHERE id = $1", user_id, customer_name, phone)
+
+
+async def get_user_contact(user_id):
+    """Oldin kiritilgan (ism, telefon) yoki None."""
+    r = await pool.fetchrow("SELECT customer_name, phone FROM users WHERE id = $1", user_id)
+    return (r["customer_name"], r["phone"]) if r and r["customer_name"] and r["phone"] else None
 
 
 async def add_calc(user_id, d, usd, rate, total_sum):

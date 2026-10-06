@@ -58,6 +58,7 @@ class Form(StatesGroup):
     handle = State()
     side = State()
     delivery = State()
+    contact = State()
     name = State()
     phone = State()
     comment = State()
@@ -677,8 +678,33 @@ async def delivery(cb: CallbackQuery, state: FSMContext):
     await db.upsert_user(cb.from_user)
     d["calc_id"] = await db.add_calc(cb.from_user.id, d, usd, rate, total_sum)
     await state.set_data(d)
-    await cb.message.answer(f"{pe('👤')} <b>Ism va familiyangizni</b> kiriting:\n<i>Masalan: Aliyev Vali</i>")
+
+    saved = await db.get_user_contact(cb.from_user.id)
+    if not saved:
+        return await ask_name(cb.message, state)
+    await cb.message.answer(
+        f"{pe('📋')} <b>SIZNING MA'LUMOTLARINGIZ</b>\n{LINE}\n"
+        f"{pe('👤')} <b>Ism va familiya:</b> {html.escape(saved[0])}\n"
+        f"{pe('📞')} <b>Telefon:</b> {saved[1]}\n{LINE}\n"
+        f"Shu ma'lumotlar bilan davom etasizmi? {pe('👇')}",
+        reply_markup=grid([("Tasdiqlash", "contact:ok", "success", "✅"), ("Tahrirlash", "contact:edit", "primary", "✏")], 2))
+    await state.set_state(Form.contact)
+
+
+async def ask_name(msg: Message, state: FSMContext):
+    await msg.answer(f"{pe('👤')} <b>Ism va familiyangizni</b> kiriting:\n<i>Masalan: Aliyev Vali</i>")
     await state.set_state(Form.name)
+
+
+@dp.callback_query(Form.contact, F.data.in_({"contact:ok", "contact:edit"}))
+async def contact_choice(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    saved = await db.get_user_contact(cb.from_user.id)
+    if cb.data == "contact:edit" or not saved:
+        await cb.message.edit_text(f"{pe('✏')} Ma'lumotlarni qaytadan kiritamiz.")
+        return await ask_name(cb.message, state)
+    await cb.message.edit_text(f"{pe('✅')} {html.escape(saved[0])} · {saved[1]}")
+    await show_order(cb.message, state, *saved)
 
 
 @dp.message(Form.name)
@@ -706,12 +732,18 @@ async def phone(msg: Message, state: FSMContext):
                                 "⚠️ Shu raqamga aloqaga chiqamiz, to'g'ri kiriting.", reply_markup=PHONE_KB)
     digits = raw.lstrip("+")
     number = "+" + ("998" + digits if len(digits) == 9 else digits)  # 901234567 -> +998901234567
-    d = await state.get_data()
-    await db.set_phone(msg.from_user.id, number)
-    await db.set_contact(d["calc_id"], d["customer_name"], number)
-    await state.set_state(None)
+    name = (await state.get_data())["customer_name"]
+    await db.save_user_contact(msg.from_user.id, name, number)  # keyingi buyurtmada qayta so'ralmaydi
     await msg.answer(f"{pe('✅')} Raqam qabul qilindi.", reply_markup=ReplyKeyboardRemove())
-    o = await db.get_order(d["calc_id"])
+    await show_order(msg, state, name, number)
+
+
+async def show_order(msg: Message, state: FSMContext, name, number):
+    """Kontaktni hisobga yozib, mijozga tasdiqlash kartasini ko'rsatadi."""
+    calc_id = (await state.get_data())["calc_id"]
+    await db.set_contact(calc_id, name, number)
+    await state.set_state(None)
+    o = await db.get_order(calc_id)
     await msg.answer(user_card(o) + f"{pe('👇')} Ma'lumotlarni tekshirib, buyurtmani <b>tasdiqlang</b>:",
                      reply_markup=grid([("Tasdiqlash", f"ord:ok:{o['id']}", "success", "✅"),
                                         ("Bekor qilish", f"ord:no:{o['id']}", "danger", "❌")], 2))
