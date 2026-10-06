@@ -80,6 +80,13 @@ def pe(ch):
     return f'<tg-emoji emoji-id="{i}">{ch}</tg-emoji>' if i else ch
 
 
+STEPS = 10  # eni, balandlik, soni, oyna, rang, furnitura, furnitura soni, ruchka, yetkazish, kontakt
+
+
+def step(n):
+    return f"<i>Qadam {n}/{STEPS}</i>\n"
+
+
 def btn(text, data, style=None, icon=None):
     """style: 'success' (yashil), 'danger' (qizil), 'primary' (ko'k). icon: emoji — premium bo'lsa tugma ikonkasi.
     data 'http' bilan boshlansa — havola tugmasi."""
@@ -377,7 +384,7 @@ def image_status(p):
     if p["file_id"]:
         return "bor ✅"
     if p["image"] and find_image(p["image"]):
-        return "bor (standart rasm)"
+        return "bor (dastlabki rasm)"
     return "yo'q ➖"
 
 
@@ -729,7 +736,7 @@ def order_body(o):
         f"{pe('💰')} <b>JAMI: {money(float(o['usd']))} USD</b>\n"
         f"{pe('💸')} <b>So'mda: {money(o['total_sum'])} so'm</b>"
         + (" <i>(yetkazish bilan)</i>" if o["delivery"] else "") + "\n"
-        f"{pe('📈')} Kurs: 1 USD = {money(float(o['rate']))} so'm"
+        f"{pe('📈')} Dollar kursi: 1 USD = {num(float(o['rate']))} so'm"
     )
 
 
@@ -790,7 +797,8 @@ async def group_decision(cb: CallbackQuery):
 
 # ================= KARUSEL =================
 
-CAROUSEL_TITLE = {"glass": f"{pe('✨')} <b>Oyna turini</b> tanlang", "color": f"{pe('🎨')} <b>Profil rangini</b> tanlang"}
+CAROUSEL_TITLE = {"glass": f"{step(4)}{pe('✨')} <b>Oyna turini</b> tanlang",
+                  "color": f"{step(5)}{pe('🎨')} <b>Profil rangini</b> tanlang"}
 
 
 def carousel(kind, i):
@@ -800,7 +808,8 @@ def carousel(kind, i):
     p = lst[i]
     markup = grid([("◀️", f"car:{kind}:{i - 1}"), ("Tanlash", f"{kind}:{p['key']}", "success", "✅"),
                    ("▶️", f"car:{kind}:{i + 1}")], 3)
-    caption = f"{CAROUSEL_TITLE[kind]}:\n\n<b>{html.escape(p['name'])}</b>  ·  {i + 1}/{len(lst)}"
+    caption = (f"{CAROUSEL_TITLE[kind]}:\n\n<b>{html.escape(p['name'])}</b>  ·  {i + 1}/{len(lst)}\n\n"
+               f"<i>◀️ ▶️ — boshqa variantlarni ko'rish,  ✅ — shuni tanlash</i>")
     return *photo_for(p), caption, markup
 
 
@@ -840,7 +849,7 @@ async def start(msg: Message, state: FSMContext, user=None):
         f"Bu bot <b>alyumin fasad</b> narxini bir necha soniyada hisoblab beradi {pe('✨')}\n{LINE}\n"
         f"⚠️ O'lchamlarni faqat <b>millimetrda (mm)</b> kiriting. Masalan: <code>2400</code>\n"
         f"Maksimal o'lcham: <b>{P.MAX_MM} mm</b>\n\n"
-        f"📏 Fasad <b>enini</b> kiriting (mm):",
+        f"{step(1)}📏 Fasad <b>enini</b> kiriting (mm):",
         reply_markup=ReplyKeyboardRemove(),
     )
     await state.set_state(Form.width)
@@ -850,9 +859,10 @@ async def start(msg: Message, state: FSMContext, user=None):
 async def width(msg: Message, state: FSMContext):
     v = parse_int(msg.text, 1, P.MAX_MM)
     if not v:
-        return await msg.answer(f"❌ Noto'g'ri qiymat. Enini mmda, 1 dan {P.MAX_MM} gacha butun son bilan kiriting. Masalan: 2400")
+        return await msg.answer(f"❌ Noto'g'ri. Enini millimetrda, faqat son bilan yozing (eng ko'pi {P.MAX_MM}).\n"
+                                f"Masalan: <code>2400</code>")
     await state.update_data(width=v)
-    await msg.answer("📏 Fasad <b>balandligini</b> kiriting (mm):")
+    await msg.answer(f"{step(2)}📏 Fasad <b>balandligini</b> kiriting (mm):\n<i>Masalan: 720</i>")
     await state.set_state(Form.height)
 
 
@@ -860,9 +870,10 @@ async def width(msg: Message, state: FSMContext):
 async def height(msg: Message, state: FSMContext):
     v = parse_int(msg.text, 1, P.MAX_MM)
     if not v:
-        return await msg.answer(f"❌ Noto'g'ri qiymat. Balandlikni mmda, 1 dan {P.MAX_MM} gacha butun son bilan kiriting. Masalan: 2400")
+        return await msg.answer(f"❌ Noto'g'ri. Balandlikni millimetrda, faqat son bilan yozing (eng ko'pi {P.MAX_MM}).\n"
+                                f"Masalan: <code>720</code>")
     await state.update_data(height=v)
-    await msg.answer("🔢 <b>Fasad sonini</b> kiriting:")
+    await msg.answer(f"{step(3)}🔢 Shu o'lchamdagi fasaddan <b>nechta</b> kerak?\n<i>Masalan: 4</i>")
     await state.set_state(Form.count)
 
 
@@ -870,7 +881,7 @@ async def height(msg: Message, state: FSMContext):
 async def count(msg: Message, state: FSMContext):
     v = parse_int(msg.text, 1, 1000)
     if not v:
-        return await msg.answer("❌ Fasad sonini 1 dan 1000 gacha butun son bilan kiriting.")
+        return await msg.answer("❌ Fasad sonini faqat son bilan yozing (1 dan 1000 gacha). Masalan: <code>4</code>")
     await state.update_data(count=v)
     await send_carousel(msg, "glass")
     await state.set_state(Form.glass)
@@ -898,7 +909,7 @@ async def color(cb: CallbackQuery, state: FSMContext):
     await state.update_data(color=p["key"])
     await cb.answer(p["name"])
     await cb.message.edit_caption(caption=f"{pe('✅')} Profil rangi: <b>{html.escape(p['name'])}</b>", reply_markup=None)
-    await cb.message.answer("🔩 <b>Furnitura turini</b> tanlang:",
+    await cb.message.answer(f"{step(6)}🔩 <b>Furnitura</b> (petlya) turini tanlang:",
                             reply_markup=grid([(f["name"], f"fit:{f['key']}", "primary") for f in items("fitting")], 2))
     await state.set_state(Form.fitting)
 
@@ -913,7 +924,8 @@ async def fitting(cb: CallbackQuery, state: FSMContext):
     await state.update_data(fitting=p["key"])
     await cb.answer()
     await cb.message.edit_text(f"{pe('✅')} Furnitura: <b>{html.escape(p['name'])}</b>")
-    await cb.message.answer("🔢 <b>Har bir fasadda nechta</b> furnitura kerak? <i>(0–20)</i>")
+    await cb.message.answer(f"{step(7)}🔢 <b>Bitta fasadga nechta</b> furnitura kerak?\n"
+                            f"<i>Masalan: 2. Kerak bo'lmasa 0 yozing.</i>")
     await state.set_state(Form.fitting_count)
 
 
@@ -921,9 +933,10 @@ async def fitting(cb: CallbackQuery, state: FSMContext):
 async def fitting_count(msg: Message, state: FSMContext):
     v = parse_int(msg.text, 0, 20)
     if v is None:
-        return await msg.answer("❌ Furnitura sonini 0 dan 20 gacha butun son bilan kiriting.")
+        return await msg.answer("❌ Faqat son yozing (0 dan 20 gacha). Masalan: <code>2</code>")
     await state.update_data(fitting_count=v)
-    await msg.answer(f"{pe('✋')} Fasad <b>ruchkalimi</b> yoki <b>ruchkasiz</b>?",
+    await msg.answer(f"{step(8)}{pe('✋')} Fasad <b>ruchkalimi</b> yoki <b>ruchkasiz</b>?\n"
+                     f"<i>Ruchka profilning o'zidan chiqariladi.</i>",
                      reply_markup=grid([("Ruchkali", "handle:yes", "primary"), ("Ruchkasiz", "handle:no", "primary")], 2))
     await state.set_state(Form.handle)
 
@@ -931,7 +944,7 @@ async def fitting_count(msg: Message, state: FSMContext):
 # ================= 7-8. Ruchka =================
 
 async def ask_delivery(msg: Message, state: FSMContext):
-    await msg.answer(f"🚚 <b>Yetkazib berish</b> kerakmi?",
+    await msg.answer(f"{step(9)}🚚 <b>Yetkazib berish</b> kerakmi?",
                      reply_markup=grid([(f"Shahar bo'ylab — {money(round(db.settings['delivery']))} so'm", "dlv:yes",
                                          "primary", "🚚"),
                                         ("O'zim olib ketaman", "dlv:no", "primary", "🏠")]))
@@ -990,7 +1003,7 @@ async def delivery(cb: CallbackQuery, state: FSMContext):
     if not saved:
         return await ask_name(cb.message, state)
     await cb.message.answer(
-        f"{pe('📋')} <b>SIZNING MA'LUMOTLARINGIZ</b>\n{LINE}\n"
+        f"{step(10)}{pe('📋')} <b>SIZNING MA'LUMOTLARINGIZ</b>\n{LINE}\n"
         f"{pe('👤')} <b>Ism va familiya:</b> {html.escape(saved[0])}\n"
         f"{pe('📞')} <b>Telefon:</b> {saved[1]}\n{LINE}\n"
         f"Shu ma'lumotlar bilan davom etasizmi? {pe('👇')}",
@@ -999,7 +1012,7 @@ async def delivery(cb: CallbackQuery, state: FSMContext):
 
 
 async def ask_name(msg: Message, state: FSMContext):
-    await msg.answer(f"{pe('👤')} <b>Ism va familiyangizni</b> kiriting:\n<i>Masalan: Aliyev Vali</i>")
+    await msg.answer(f"{step(10)}{pe('👤')} <b>Ism va familiyangizni</b> kiriting:\n<i>Masalan: Aliyev Vali</i>")
     await state.set_state(Form.name)
 
 
@@ -1114,12 +1127,14 @@ async def comment(msg: Message, state: FSMContext):
 
 @dp.message(F.chat.type == "private")
 async def fallback(msg: Message):
-    await msg.answer("Iltimos, yuqoridagi tugmalardan birini tanlang yoki /start bosing.")
+    await msg.answer("🤔 Tushunmadim.\n\n"
+                     "• Savolga javob berayotgan bo'lsangiz — yuqoridagi <b>tugmalardan birini</b> bosing.\n"
+                     "• Yangi narx hisoblash uchun — /start bosing.")
 
 
 @dp.callback_query()
 async def stale_button(cb: CallbackQuery):
-    await cb.answer("Bu tugma eskirgan. /start bosing.", show_alert=True)
+    await cb.answer("Bu tugma endi ishlamaydi. Yangi hisob boshlash uchun /start bosing.", show_alert=True)
 
 
 async def main():

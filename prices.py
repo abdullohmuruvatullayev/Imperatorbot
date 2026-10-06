@@ -28,7 +28,7 @@ SETTINGS = {
     "corner": ("Ugolnik (fasadga 4 dona)", "$/dona", 1.5),
     "rubber": ("Rezinka", "$/metr", 0.8),
     "delivery": ("Yetkazib berish", "so'm", 100_000),
-    "fallback_rate": ("Zaxira kurs (CBU ishlamasa)", "so'm", 11_800),
+    "fallback_rate": ("Zaxira dollar kursi (Markaziy bank kursi olinmasa)", "so'm", 11_800),
 }
 
 
