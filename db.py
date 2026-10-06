@@ -191,6 +191,7 @@ async def stats():
           (SELECT count(*) FROM users)                                   AS users,
           (SELECT count(*) FROM users WHERE NOT blocked)                 AS active_users,
           (SELECT count(*) FROM users WHERE created_at >= current_date)  AS new_today,
+          (SELECT count(*) FROM users WHERE created_at >= now() - interval '7 days') AS new_week,
           count(*) FILTER (WHERE created_at >= current_date)             AS calc_today,
           count(*) FILTER (WHERE created_at >= now() - interval '7 days') AS calc_week,
           count(*)                                                        AS calc_all,

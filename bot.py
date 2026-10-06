@@ -298,17 +298,23 @@ async def adm_stat(cb: CallbackQuery):
     await cb.answer()
     await screen(cb.message,
                  head(["Statistika"], f"{pe('📊')} <b>STATISTIKA</b>") +
-                 f"{pe('👤')} <b>Mijozlar:</b> {s['users']} ta\n"
-                 f"      faol: {s['active_users']}  ·  bugun yangi: {s['new_today']}\n\n"
-                 f"{pe('🧮')} <b>Hisob-kitoblar</b>\n"
-                 f"      bugun: <b>{s['calc_today']}</b>  ·  7 kun: <b>{s['calc_week']}</b>  ·  jami: <b>{s['calc_all']}</b>\n"
-                 f"{pe('🛒')} <b>Buyurtmalar</b>\n"
-                 f"      bugun: <b>{s['ord_today']}</b>  ·  7 kun: <b>{s['ord_week']}</b>  ·  jami: <b>{s['ord_all']}</b>\n\n"
-                 f"<b>Buyurtmalar holati:</b>\n"
-                 f"{pe('⏳')} Kutilmoqda: <b>{s['st_new']}</b>\n"
-                 f"{pe('✅')} Tasdiqlangan: <b>{s['st_confirmed']}</b>\n"
-                 f"{pe('❌')} Bekor qilingan: <b>{s['st_cancelled']}</b>\n\n"
-                 f"{pe('💰')} <b>Tasdiqlanganlar summasi: {money(float(s['confirmed_usd']))} $</b>",
+                 f"📅 <b>BUGUN</b>\n"
+                 f"• Yangi mijozlar: <b>{s['new_today']} ta</b>\n"
+                 f"• Narx hisoblandi: <b>{s['calc_today']} marta</b>\n"
+                 f"• Buyurtma berildi: <b>{s['ord_today']} ta</b>\n\n"
+                 f"🗓 <b>OXIRGI 7 KUN</b>\n"
+                 f"• Yangi mijozlar: <b>{s['new_week']} ta</b>\n"
+                 f"• Narx hisoblandi: <b>{s['calc_week']} marta</b>\n"
+                 f"• Buyurtma berildi: <b>{s['ord_week']} ta</b>\n\n"
+                 f"{pe('📈')} <b>BOT ISHGA TUSHGANDAN BERI</b>\n"
+                 f"• Jami mijozlar: <b>{s['users']} ta</b>\n"
+                 f"• Narx hisoblandi: <b>{s['calc_all']} marta</b>\n"
+                 f"• Buyurtma berildi: <b>{s['ord_all']} ta</b>\n\n"
+                 f"{pe('🛒')} <b>BUYURTMALAR HOLATI</b>\n"
+                 f"{pe('⏳')} Javob kutmoqda: <b>{s['st_new']} ta</b>\n"
+                 f"{pe('✅')} Tasdiqlangan: <b>{s['st_confirmed']} ta</b>\n"
+                 f"{pe('❌')} Bekor qilingan: <b>{s['st_cancelled']} ta</b>\n\n"
+                 f"{pe('💰')} <b>Tasdiqlangan buyurtmalar summasi: {money(float(s['confirmed_usd']))} $</b>",
                  rows([("🔄 Yangilash", "adm:stat", "primary")], [HOME]))
 
 
