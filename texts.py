@@ -12,25 +12,52 @@ TEXTS = {
     "step": ("<i>Qadam {n}/{total}</i>\n", "<i>Шаг {n}/{total}</i>\n"),
     "welcome": (
         "👋 <b>Assalomu alaykum!</b>\n"
-        "Bu bot <b>alyumin fasad</b> narxini bir necha soniyada hisoblab beradi ✨\n{line}\n"
-        "⚠️ O'lchamlarni faqat <b>millimetrda (mm)</b> kiriting. Masalan: <code>2400</code>\n"
-        "Maksimal o'lcham: <b>{max} mm</b>\n\n",
+        "Bu bot <b>alyumin fasad</b> narxini bir necha soniyada hisoblab beradi ✨\n{line}\n",
         "👋 <b>Здравствуйте!</b>\n"
-        "Этот бот за несколько секунд рассчитает стоимость <b>алюминиевого фасада</b> ✨\n{line}\n"
-        "⚠️ Размеры вводите только в <b>миллиметрах (мм)</b>. Например: <code>2400</code>\n"
-        "Максимальный размер: <b>{max} мм</b>\n\n",
+        "Этот бот за несколько секунд рассчитает стоимость <b>алюминиевого фасада</b> ✨\n{line}\n",
     ),
-    "ask_width": ("📏 Fasad <b>enini</b> kiriting (mm):", "📏 Введите <b>ширину</b> фасада (мм):"),
-    "err_width": ("❌ Noto'g'ri. Enini millimetrda, faqat son bilan yozing (eng ko'pi {max}).\nMasalan: <code>2400</code>",
-                  "❌ Неверно. Введите ширину в миллиметрах, только числом (не больше {max}).\nНапример: <code>2400</code>"),
-    "ask_height": ("📏 Fasad <b>balandligini</b> kiriting (mm):\n<i>Masalan: 720</i>",
-                   "📏 Введите <b>высоту</b> фасада (мм):\n<i>Например: 720</i>"),
-    "err_height": ("❌ Noto'g'ri. Balandlikni millimetrda, faqat son bilan yozing (eng ko'pi {max}).\nMasalan: <code>720</code>",
-                   "❌ Неверно. Введите высоту в миллиметрах, только числом (не больше {max}).\nНапример: <code>720</code>"),
-    "ask_count": ("🔢 Shu o'lchamdagi fasaddan <b>nechta</b> kerak?\n<i>Masalan: 4</i>",
-                  "🔢 Сколько фасадов <b>такого размера</b> нужно?\n<i>Например: 4</i>"),
-    "err_count": ("❌ Fasad sonini faqat son bilan yozing (1 dan 1000 gacha). Masalan: <code>4</code>",
-                  "❌ Введите количество числом (от 1 до 1000). Например: <code>4</code>"),
+    "ask_count": ("🔢 <b>Nechta fasad</b> hisoblaymiz?\n<i>Masalan: 4</i>\n\n"
+                  "Har bir fasadning <b>o'lchamini alohida</b> kiritasiz.",
+                  "🔢 <b>Сколько фасадов</b> считаем?\n<i>Например: 4</i>\n\n"
+                  "Размер <b>каждого фасада</b> вводится отдельно."),
+    "err_count": ("❌ Fasad sonini faqat son bilan yozing (1 dan {fmax} gacha). Masalan: <code>4</code>",
+                  "❌ Введите количество числом (от 1 до {fmax}). Например: <code>4</code>"),
+
+    # --- fasad o'lchamlari: har biriga alohida, avval bo'yi, keyin eni ---
+    "ask_facade_dims": ("✍️ <b>{n}-fasad BO'YINI</b> kiriting (mm)  ({i}/{n_all})\n\n"
+                        "📐 Rasmda <b>chapdagi o'q</b> — aynan bo'yi.\n"
+                        "Masalan: <code>1800</code>   ·   eng ko'pi <b>{max}</b>\n"
+                        "<i>Keyingi qadamda enini so'rayman.</i>",
+                        "✍️ Введите <b>ВЫСОТУ {n}-го фасада</b> (мм)  ({i}/{n_all})\n\n"
+                        "📐 На рисунке <b>стрелка слева</b> — это высота.\n"
+                        "Например: <code>1800</code>   ·   максимум <b>{max}</b>\n"
+                        "<i>На следующем шаге спрошу ширину.</i>"),
+    "ask_width": ("✍️ Endi <b>{n}-fasad ENINI</b> kiriting (mm)  ({i}/{n_all})\n\n"
+                  "📐 Rasmda <b>pastdagi o'q</b> — aynan eni. Bo'yi <b>{h}</b> mm saqlandi ✅\n"
+                  "Masalan: <code>900</code>\n"
+                  "<i>Yoki ikkalasini birdan yozing: <code>1800 900</code></i>",
+                  "✍️ Теперь введите <b>ШИРИНУ {n}-го фасада</b> (мм)  ({i}/{n_all})\n\n"
+                  "📐 На рисунке <b>стрелка снизу</b> — это ширина. Высота <b>{h}</b> мм сохранена ✅\n"
+                  "Например: <code>900</code>\n"
+                  "<i>Или напишите оба значения сразу: <code>1800 900</code></i>"),
+    "err_facade_dims": ("❌ Bo'ynini faqat son bilan yozing (mm), eng ko'pi {max}.\n"
+                        "Masalan: <code>1800</code>",
+                        "❌ Введите высоту числом (мм), не больше {max}.\n"
+                        "Например: <code>1800</code>"),
+    "err_width": ("❌ Enini faqat son bilan yozing (mm), eng ko'pi {max}.\n"
+                  "Masalan: <code>900</code>",
+                  "❌ Введите ширину числом (мм), не больше {max}.\n"
+                  "Например: <code>900</code>"),
+    "facade_saved": ("✅ <b>{n}-fasad:</b> bo'yi {h} × eni {w} mm", "✅ <b>Фасад {n}:</b> высота {h} × ширина {w} мм"),
+    "all_dims_done": ("✅ Barcha <b>{n} ta</b> fasad o'lchami kiritildi.", "✅ Размеры <b>всех {n}</b> фасадов введены."),
+    # chizma (diagram.py) ichidagi yozuvlar — rasmda ko'rinadi
+    "dg_title": ("{n}-FASAD", "{n}-ФАСАД"),
+    "dg_mm": ("mm", "мм"),
+    "dg_height": ("BO'YI", "ВЫСОТА"),
+    "dg_width": ("ENI", "ШИРИНА"),
+    "dg_no_height": ("bo'yi ?", "высота ?"),
+    "dg_no_width": ("eni ?", "ширина ?"),
+    "dg_handle": ("ruchka", "ручка"),
 
     # --- karusel ---
     "title_glass": ("✨ <b>Oyna turini</b> tanlang", "✨ Выберите <b>тип стекла</b>"),
@@ -47,8 +74,27 @@ TEXTS = {
     # --- furnitura ---
     "ask_fitting": ("🔩 <b>Furnitura</b> (petlya) turini tanlang:", "🔩 Выберите тип <b>фурнитуры</b> (петли):"),
     "chosen_fitting": ("✅ Furnitura: <b>{name}</b>", "✅ Фурнитура: <b>{name}</b>"),
-    "ask_fit_count": ("🔢 <b>Bitta fasadga nechta</b> furnitura kerak?\n<i>Masalan: 2. Kerak bo'lmasa 0 yozing.</i>",
-                      "🔢 Сколько петель нужно <b>на один фасад</b>?\n<i>Например: 2. Если не нужно — напишите 0.</i>"),
+    # --- furnitura soni: har bir fasad alohida (ruchka oqimiga o'xshash) ---
+    "ask_fit_list": ("✋ Furnitura: <b>{fitting}</b>\n\n"
+                     "Har bir fasadga <b>nechtaligi</b>ni kiriting.\n\n"
+                     "👇 Fasad ustiga bosing va sonini yozing.\n"
+                     "<b>Barcha {n} ta</b> fasadni albatta to'ldiring.",
+                     "✋ Фурнитура: <b>{fitting}</b>\n\n"
+                     "Введите <b>количество</b> для каждого фасада.\n\n"
+                     "👇 Нажмите на фасад и введите количество.\n"
+                     "Обязательно заполните <b>все {n}</b> фасадов."),
+    "ask_fit": ("🔢 <b>{n}-fasad</b> ({h}×{w}) — nechta furnitura kerak?\n"
+                "<i>Masalan: 2. Kerak bo'lmasa 0 yozing.</i>{cur}",
+                "🔢 <b>Фасад {n}</b> ({h}×{w}) — сколько фурнитуры нужно?\n"
+                "<i>Например: 2. Если не нужно — напишите 0.</i>{cur}"),
+    "b_fit": ("{n}-fasad {h}×{w}", "{n}-фасад {h}×{w}"),
+    "b_fit_marked": ("✅ {n}-fasad {h}×{w} · {v} dona", "✅ {n}-фасад {h}×{w} · {v} шт"),
+    "fits_progress": ("Kiritilgan: {done}/{n}", "Введено: {done}/{n}"),
+    "b_fits_done": ("Tayyor — davom etamiz", "Готово — продолжить"),
+    "a_all_fits_done": ("Barcha fasadlar kiritildi ✅", "Все фасады введены ✅"),
+    "err_fits_left": ("Avval qolgan fasadlarni to'ldiring: {left}",
+                      "Сначала заполните оставшиеся фасады: {left}"),
+    "fit_saved": ("✅ <b>{n}-fasad:</b> furnitura {v} dona", "✅ <b>Фасад {n}:</b> фурнитура {v} шт"),
     "err_fit_count": ("❌ Faqat son yozing (0 dan 20 gacha). Masalan: <code>2</code>",
                       "❌ Введите число (от 0 до 20). Например: <code>2</code>"),
 
@@ -57,13 +103,26 @@ TEXTS = {
                    "✋ Фасад <b>с ручкой</b> или <b>без ручки</b>?\n<i>Ручка делается из самого профиля.</i>"),
     "b_handle_yes": ("Ruchkali", "С ручкой"),
     "b_handle_no": ("Ruchkasiz", "Без ручки"),
-    "ask_side": ("✋ Ruchka qaysi tomonda?", "✋ С какой стороны ручка?"),
+    "ask_handle_list": ("✋ <b>Ruchkali fasadlarni belgilang.</b>\n\n"
+                        "👇 Qaysi fasadda ruchka bo'lsa, <b>o'sha fasad ustiga bosing</b>, keyin tomonini tanlang.\n"
+                        "<b>Barcha {n} ta</b> fasadni albatta belgilang.",
+                        "✋ <b>Отметьте фасады с ручкой.</b>\n\n"
+                        "👇 Нажмите на <b>фасад с ручкой</b>, затем выберите сторону.\n"
+                        "Обязательно отметьте <b>все {n}</b> фасадов."),
+    "b_facade": ("{n}-fasad {h}×{w}", "{n}-фасад {h}×{w}"),
+    "b_facade_marked": ("✅ {n}-fasad {h}×{w} · {v}", "✅ {n}-фасад {h}×{w} · {v}"),
+    "ask_side": ("✋ <b>{n}-fasad</b> ({h}×{w}) — ruchka qaysi tomonda?", "✋ <b>Фасад {n}</b> ({h}×{w}) — с какой стороны ручка?"),
     "b_left": ("⬅️ Chap", "⬅️ Слева"),
     "b_right": ("O'ng ➡️", "Справа ➡️"),
     "chosen_handle": ("✅ Ruchka: <b>{v}</b>", "✅ Ручка: <b>{v}</b>"),
     "handle_none": ("Ruchkasiz", "Без ручки"),
     "handle_chap": ("Chap tomonda", "Слева"),
     "handle_ong": ("O'ng tomonda", "Справа"),
+    "b_facade_list": ("⬅️ Fasadlar ro'yxati", "⬅️ Список фасадов"),
+    "b_handles_done": ("Tayyor — davom etamiz", "Готово — продолжить"),
+    "handles_progress": ("Belgilangan: {done}/{n}", "Отмечено: {done}/{n}"),
+    "err_handles_left": ("Avval qolgan fasadlarni belgilang: {left}", "Сначала отметьте оставшиеся фасады: {left}"),
+    "a_all_handles_done": ("Barcha fasadlar belgilandi ✅", "Все фасады отмечены ✅"),
 
     # --- yetkazish ---
     "ask_delivery": ("🚚 <b>Yetkazib berish</b> kerakmi?", "🚚 Нужна <b>доставка</b>?"),
@@ -102,17 +161,22 @@ TEXTS = {
     "order_title": ("🛒 <b>BUYURTMANGIZ #{id}</b>", "🛒 <b>ВАШ ЗАКАЗ №{id}</b>"),
     "order_body": (
         "👤 <b>Mijoz:</b> {name}\n📞 <b>Telefon:</b> {phone}\n\n<blockquote>"
-        "📐 <b>O'lcham:</b> {w} × {h} mm\n🔢 <b>Soni:</b> {count} dona\n🪟 <b>Oyna:</b> {glass}\n"
-        "🎨 <b>Profil rangi:</b> {color}\n🔩 <b>Furnitura:</b> {fitting} — {fc} dona/fasad\n"
+        "{dims}"
+        "🔢 <b>Soni:</b> {count} dona\n🪟 <b>Oyna:</b> {glass}\n"
+        "🎨 <b>Profil rangi:</b> {color}\n🔩 <b>Furnitura:</b> {fitting} · {fit}\n"
         "✋ <b>Ruchka:</b> {handle}\n🚚 <b>Yetkazish:</b> {delivery}</blockquote>\n\n"
         "💰 <b>JAMI: {usd} USD</b>\n💸 <b>So'mda: {sum} so'm</b>{with_dlv}\n📈 Dollar kursi: 1 USD = {rate} so'm",
         "👤 <b>Клиент:</b> {name}\n📞 <b>Телефон:</b> {phone}\n\n<blockquote>"
-        "📐 <b>Размер:</b> {w} × {h} мм\n🔢 <b>Количество:</b> {count} шт\n🪟 <b>Стекло:</b> {glass}\n"
-        "🎨 <b>Цвет профиля:</b> {color}\n🔩 <b>Фурнитура:</b> {fitting} — {fc} шт/фасад\n"
+        "{dims}"
+        "🔢 <b>Количество:</b> {count} шт\n🪟 <b>Стекло:</b> {glass}\n"
+        "🎨 <b>Цвет профиля:</b> {color}\n🔩 <b>Фурнитура:</b> {fitting} · {fit}\n"
         "✋ <b>Ручка:</b> {handle}\n🚚 <b>Доставка:</b> {delivery}</blockquote>\n\n"
         "💰 <b>ИТОГО: {usd} USD</b>\n💸 <b>В сумах: {sum} сум</b>{with_dlv}\n📈 Курс доллара: 1 USD = {rate} сум",
     ),
     "with_delivery": (" <i>(yetkazish bilan)</i>", " <i>(с доставкой)</i>"),
+    # buyurtma kartasidagi har bir fasad qatori: "{n}-fasad: bo'yi {h} × eni {w} mm"
+    "dims_line": ("{n}-fasad: bo'yi {h} × eni {w} mm", "{n}-фасад: высота {h} × ширина {w} мм"),
+    "dims_title": ("📐 <b>Fasadlar</b> (bo'yi × eni)\n", "📐 <b>Фасады</b> (высота × ширина)\n"),
     "confirm_prompt": ("👇 Ma'lumotlarni tekshirib, buyurtmani <b>tasdiqlang</b>:",
                        "👇 Проверьте данные и <b>подтвердите</b> заказ:"),
     "b_cancel": ("Bekor qilish", "Отменить"),

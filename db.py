@@ -1,3 +1,4 @@
+import json
 import secrets
 
 import asyncpg
@@ -65,6 +66,9 @@ ALTER TABLE calculations ADD COLUMN IF NOT EXISTS phone TEXT;
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS status TEXT;        -- NULL | new | confirmed | cancelled
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS status_by TEXT;     -- qaysi admin
 ALTER TABLE calculations ADD COLUMN IF NOT EXISTS status_at TIMESTAMPTZ;
+-- Har bir fasad o'lchami alohida: [{"w":900,"h":1800,"handle":"chap"}, ...] (eni x balandlik mm).
+-- Eski buyurtmalarda NULL — ular uchun width/height/count ishlatiladi.
+ALTER TABLE calculations ADD COLUMN IF NOT EXISTS facades JSONB;
 UPDATE calculations SET status = 'new' WHERE ordered_at IS NOT NULL AND status IS NULL;
 CREATE INDEX IF NOT EXISTS calculations_created_at ON calculations(created_at);
 """
@@ -167,12 +171,21 @@ async def get_user_contact(user_id):
 
 
 async def add_calc(user_id, d, usd, rate, total_sum):
+    """d: FSM ma'lumotlari. Har bir fasad o'lchami va furnitura soni alohida
+    ('facades' JSONB ichida) saqlanadi. Eski ustunlar (width/height/count/
+    handle/fitting_count) ham to'ladi — eski hisobotlar va CSV uzilmasin
+    (fitting_count — birinchi fasadning furnitura soni)."""
+    facades = d["facades"]
+    dims = [{"w": f["w"], "h": f["h"], "handle": f["handle"], "fit": f.get("fit", 0)}
+            for f in facades]
+    handle = next((f["handle"] for f in facades if f["handle"]), None)
     return await pool.fetchval(
-        """INSERT INTO calculations(user_id, width, height, count, glass, color, fitting, fitting_count,
+        """INSERT INTO calculations(user_id, width, height, count, facades, glass, color, fitting, fitting_count,
                                     handle, delivery, usd, rate, total_sum)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id""",
-        user_id, d["width"], d["height"], d["count"], d["glass"], d["color"], d["fitting"], d["fitting_count"],
-        d["side"], d["delivery"], usd, rate, total_sum)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id""",
+        user_id, facades[0]["w"], facades[0]["h"], len(facades), json.dumps(dims),
+        d["glass"], d["color"], d["fitting"], facades[0].get("fit", 0),
+        handle, d["delivery"], usd, rate, total_sum)
 
 
 async def set_contact(calc_id, customer_name, phone):
@@ -185,10 +198,17 @@ async def submit_order(calc_id):
                                "WHERE id = $1 AND ordered_at IS NULL RETURNING id", calc_id)
 
 
-async def set_status(calc_id, status, by):
-    """Admin qarori. Faqat 'new' holatdagisi o'zgaradi — ikki admin bir vaqtda bossa ham bittasi o'tadi."""
-    return await pool.fetchval("UPDATE calculations SET status = $2, status_by = $3, status_at = now() "
-                               "WHERE id = $1 AND status = 'new' RETURNING id", calc_id, status, by)
+async def set_status(calc_id, status, by, order=False):
+    """Admin qarori. Faqat 'new' yoki hali tasdiqlanmagan (status NULL) holatdagisi
+    o'zgaradi — ikki admin bir vaqtda bossa ham bittasi o'tadi.
+    order=True bo'lsa — ordered_at ham qo'yiladi (mijoz hali tasdiqlamagan
+    hisob-kitobni admin o'zi tasdiqlaganda — u to'liq buyurtmaga aylanadi)."""
+    return await pool.fetchval(
+        """UPDATE calculations
+           SET status = $2, status_by = $3, status_at = now(),
+               ordered_at = CASE WHEN $4 AND ordered_at IS NULL THEN now() ELSE ordered_at END
+           WHERE id = $1 AND (status = 'new' OR status IS NULL)
+           RETURNING id""", calc_id, status, by, order)
 
 
 async def get_order(calc_id):
@@ -219,17 +239,67 @@ async def stats():
           count(*) FILTER (WHERE status = 'new')                          AS st_new,
           count(*) FILTER (WHERE status = 'confirmed')                    AS st_confirmed,
           count(*) FILTER (WHERE status = 'cancelled')                    AS st_cancelled,
-          coalesce(sum(usd) FILTER (WHERE status = 'confirmed'), 0)       AS confirmed_usd
+          coalesce(sum(usd) FILTER (WHERE status = 'confirmed'), 0)       AS confirmed_usd,
+          coalesce(sum(usd) FILTER (WHERE status = 'cancelled'), 0)       AS cancelled_usd
         FROM calculations""")
 
 
 async def export_rows():
     return await pool.fetch("""
         SELECT c.id, to_char(c.created_at, 'YYYY-MM-DD HH24:MI') AS created_at, u.id AS user_id, u.username, u.full_name, c.customer_name, coalesce(c.phone, u.phone) AS phone,
-               c.width, c.height, c.count, c.glass, c.color, c.fitting, c.fitting_count, c.handle,
+               c.width, c.height, c.count, c.facades, c.glass, c.color, c.fitting, c.fitting_count, c.handle,
                c.delivery, c.usd, c.rate, c.total_sum,
                to_char(c.ordered_at, 'YYYY-MM-DD HH24:MI') AS ordered_at, c.status, c.status_by
         FROM calculations c JOIN users u ON u.id = c.user_id ORDER BY c.id""")
+
+
+async def order_count():
+    return await pool.fetchval("SELECT count(*) FROM calculations")
+
+
+async def orders(page=0, per_page=10):
+    """Buyurtmalar tarixi: eng yangilari birinchi."""
+    return await pool.fetch("""
+        SELECT c.*, u.username, u.full_name,
+               to_char(c.created_at, 'DD.MM.YYYY HH24:MI') AS created_str
+        FROM calculations c JOIN users u ON u.id = c.user_id
+        ORDER BY c.id DESC
+        LIMIT $1 OFFSET $2""", per_page, page * per_page)
+
+
+async def search_orders(q):
+    """ID, mijoz ismi, telefon yoki username bo'yicha qidiruv."""
+    like = f"%{q}%"
+    return await pool.fetch("""
+        SELECT c.*, u.username, u.full_name,
+               to_char(c.created_at, 'DD.MM.YYYY HH24:MI') AS created_str
+        FROM calculations c JOIN users u ON u.id = c.user_id
+        WHERE c.id::text LIKE $1
+           OR c.customer_name ILIKE $2
+           OR c.phone ILIKE $2
+           OR u.username ILIKE $2
+           OR u.full_name ILIKE $2
+        ORDER BY c.id DESC
+        LIMIT 50""", like, like)
+
+
+async def stats_days():
+    """Oxirgi 7 kun: har kunga hisoblar va buyurtmalar soni."""
+    return await pool.fetch("""
+        SELECT to_char(d, 'DD.MM') AS day,
+               (SELECT count(*) FROM calculations WHERE created_at::date = d::date) AS calc,
+               (SELECT count(*) FROM calculations WHERE ordered_at::date = d::date) AS ord
+        FROM generate_series(current_date - 6, current_date, '1 day') AS d
+        ORDER BY d""")
+
+
+async def blocked_users():
+    return await pool.fetch("SELECT id, username, full_name FROM users WHERE blocked ORDER BY id")
+
+
+async def unblock_user(user_id):
+    return await pool.fetchval(
+        "UPDATE users SET blocked = FALSE WHERE id = $1 RETURNING id", user_id)
 
 
 async def active_user_ids():

@@ -20,6 +20,7 @@ from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, FSInput
                            ReplyKeyboardRemove)
 
 import db
+import diagram
 import prices as P
 from texts import TEXTS
 
@@ -57,15 +58,16 @@ is_admin = F.from_user.id.in_(ADMIN_IDS)
 
 
 class Form(StatesGroup):
-    width = State()
-    height = State()
-    count = State()
+    count = State()        # nechta fasad
+    dims = State()         # har bir fasad: BO'YI (mm)
+    width = State()        # har bir fasad: ENI (mm)
     glass = State()
     color = State()
     fitting = State()
-    fitting_count = State()
+    fit_list = State()     # furnitura soni: fasadlar ro'yxati
+    fit = State()          # furnitura soni: tanlangan fasadga son kiritish
     handle = State()
-    side = State()
+    side = State()         # ruchka: qaysi fasad -> qaysi tomon
     delivery = State()
     contact = State()
     name = State()
@@ -81,7 +83,7 @@ def pe(ch):
     return f'<tg-emoji emoji-id="{i}">{ch}</tg-emoji>' if i else ch
 
 
-STEPS = 10  # eni, balandlik, soni, oyna, rang, furnitura, furnitura soni, ruchka, yetkazish, kontakt
+STEPS = 9  # soni, o'lchamlar, ruchka, oyna, rang, furnitura, furnitura soni, yetkazish, kontakt
 
 # Matndagi oddiy emojilarni premium emojiga aylantirish (uzunlari birinchi: ko'p belgili emoji bo'linmasin)
 _EMOJI_RE = re.compile("|".join(re.escape(k) + "\ufe0f?" for k in sorted(EMOJI, key=len, reverse=True)
@@ -95,8 +97,25 @@ def rich(text):
 
 def t(lang, key, **kw):
     """Mijoz tilidagi matn (texts.py). 'b_'/'a_' kalitlari — tugma/ogohlantirish: oddiy matn."""
-    text = TEXTS[key][lang == "ru"].format(line=LINE, max=P.MAX_MM, contact=CONTACT, total=STEPS, **kw)
+    text = TEXTS[key][lang == "ru"].format(line=LINE, max=P.MAX_MM, fmax=P.MAX_FACADES, contact=CONTACT,
+                                           total=STEPS, **kw)
     return text if key.startswith(("b_", "a_")) else rich(text)
+
+
+def facades_of(o):
+    """Buyurtma fasadlari: [{'w':.., 'h':.., 'handle':.., 'fit':..}, ...].
+    Eski buyurtmalarda facades yo'q — bitta o'lcham count marta takrorlanadi,
+    furnitura soni esa fitting_count ustunidan olinadi."""
+    if o.get("facades"):
+        return json.loads(o["facades"])
+    return [{"w": o["width"], "h": o["height"], "handle": o["handle"],
+             "fit": o["fitting_count"]}] * (o["count"] or 1)
+
+
+def dims_block(o, lang):
+    """Buyurtma kartasidagi o'lchamlar bloki: har bir fasad alohida qatorda (bo'yi × eni)."""
+    lines = [t(lang, "dims_line", n=i, h=f["h"], w=f["w"]) for i, f in enumerate(facades_of(o), 1)]
+    return t(lang, "dims_title") + "\n".join(lines) + "\n"
 
 
 def step(lang, n):
@@ -186,6 +205,39 @@ def remember(path, m):
         _file_ids[path] = m.photo[-1].file_id
 
 
+# --- O'lcham chizmasi (rasm) ---
+_diagram_ids = {}  # kalit -> Telegram file_id (bir xil chizma qayta yuklanmaydi)
+
+
+def dg_texts(lang):
+    """diagram.py uchun tilga bog'liq yozuvlar."""
+    keys = ("dg_title", "dg_mm", "dg_height", "dg_width", "dg_no_height", "dg_no_width", "dg_handle")
+    return {k: TEXTS[k][lang == "ru"] for k in keys}
+
+
+async def send_diagram(msg: Message, lang, *, n, n_all, height=None, width=None, handle=None, ask=None,
+                       caption=None, reply_markup=None):
+    """Fasad chizmasini yuboradi. Chizma yasalmasa — faqat matn (oqim uzulmaydi).
+
+    Bir xil chizma Telegram'ga qayta yuklanmaydi: file_id keshda saqlanadi.
+    """
+    texts = dg_texts(lang)
+    png = await asyncio.to_thread(diagram.diagram, n, n_all, height, width, handle, texts, ask)
+    if png is None:                      # chizma bo'lmasa — matn bilan davom etamiz
+        return await msg.answer(caption or "", reply_markup=reply_markup)
+    key = (lang, n, n_all, height, width, handle, ask)
+    fid = _diagram_ids.get(key)
+    try:
+        m = await msg.answer_photo(BufferedInputFile(png, f"fasad_{n}.png") if not fid else fid,
+                                   caption=caption, reply_markup=reply_markup)
+    except TelegramBadRequest:           # eskigan file_id — qaytadan yuklaymiz
+        m = await msg.answer_photo(BufferedInputFile(png, f"fasad_{n}.png"),
+                                   caption=caption, reply_markup=reply_markup)
+    if m.photo:
+        _diagram_ids[key] = m.photo[-1].file_id
+    return m
+
+
 async def screen(msg: Message, text, markup=None, photo=None, path=None, edit=True):
     """Bitta xabar ichida navigatsiya: imkon bo'lsa shu xabarni tahrirlaydi (matn<->matn, rasm<->rasm),
     bo'lmasa eskisini o'chirib yangisini yuboradi. Chat toza qoladi."""
@@ -236,6 +288,7 @@ class AdminForm(StatesGroup):
     new_price = State()
     setting = State()    # umumiy narx
     broadcast = State()
+    find = State()       # buyurtma qidiruv
 
 
 NOT_CMD = ~F.text.startswith("/")  # admin kutish holatida /start yozsa, u buyruq sifatida ishlasin
@@ -286,6 +339,7 @@ def admin_home():
     text = (f"{pe('🛠')} <b>ADMIN PANEL</b>\n{LINE}\n"
             f"<b>Katalog</b> — mahsulot qo'shish, narxi, rasmi, o'chirish\n"
             f"<b>Umumiy narxlar</b> — profil, yig'ish, yetkazish va boshqalar\n"
+            f"<b>Buyurtmalar</b> — tarix, qidiruv, tasdiqlash/bekor qilish\n"
             f"<b>Hisobot</b> — statistika va Excel fayl\n"
             f"<b>Xabar</b> — barcha mijozlarga e'lon\n\n"
             f"Bo'limni tanlang {pe('👇')}")
@@ -294,6 +348,7 @@ def admin_home():
                   [(f"🔩 Furnitura · {n['fitting']} ta", "adm:k:fitting", "primary")],
                   [("⚙️ Umumiy narxlar", "adm:set", "primary")],
                   [("📊 Statistika", "adm:stat"), ("📥 Excel hisobot", "adm:export")],
+                  [("📋 Buyurtmalar tarixi", "adm:orders"), ("🚫 Bloklangan mijozlar", "adm:blocked")],
                   [("📢 Mijozlarga xabar yuborish", "adm:bc", "success")])
     return text, markup
 
@@ -315,11 +370,16 @@ async def adm_menu(cb: CallbackQuery, state: FSMContext):
 # --- Statistika va eksport ---
 
 STATUS_NAME = {"new": "Kutilmoqda", "confirmed": "Tasdiqlangan", "cancelled": "Bekor qilingan"}
+HANDLE_NAME = {"chap": "Chap", "ong": "O'ng"}  # CSV uchun (admin paneli o'zbekcha)
 
 
 @dp.callback_query(F.data == "adm:stat", is_admin)
 async def adm_stat(cb: CallbackQuery):
     s = await db.stats()
+    days = await db.stats_days()
+    avg = float(s['confirmed_usd']) / s['st_confirmed'] if s['st_confirmed'] else 0
+    week = "\n".join(f"• {d['day']}: <b>{d['calc']}</b> hisob, <b>{d['ord']}</b> buyurtma"
+                     for d in days)
     await cb.answer()
     await screen(cb.message,
                  head(["Statistika"], f"{pe('📊')} <b>STATISTIKA</b>") +
@@ -327,19 +387,18 @@ async def adm_stat(cb: CallbackQuery):
                  f"• Yangi mijozlar: <b>{s['new_today']} ta</b>\n"
                  f"• Narx hisoblandi: <b>{s['calc_today']} marta</b>\n"
                  f"• Buyurtma berildi: <b>{s['ord_today']} ta</b>\n\n"
-                 f"🗓 <b>OXIRGI 7 KUN</b>\n"
-                 f"• Yangi mijozlar: <b>{s['new_week']} ta</b>\n"
-                 f"• Narx hisoblandi: <b>{s['calc_week']} marta</b>\n"
-                 f"• Buyurtma berildi: <b>{s['ord_week']} ta</b>\n\n"
+                 f"🗓 <b>OXIRGI 7 KUN</b> (kunma-kun)\n{week}\n\n"
                  f"{pe('📈')} <b>BOT ISHGA TUSHGANDAN BERI</b>\n"
                  f"• Jami mijozlar: <b>{s['users']} ta</b>\n"
                  f"• Narx hisoblandi: <b>{s['calc_all']} marta</b>\n"
                  f"• Buyurtma berildi: <b>{s['ord_all']} ta</b>\n\n"
                  f"{pe('🛒')} <b>BUYURTMALAR HOLATI</b>\n"
                  f"{pe('⏳')} Javob kutmoqda: <b>{s['st_new']} ta</b>\n"
-                 f"{pe('✅')} Tasdiqlangan: <b>{s['st_confirmed']} ta</b>\n"
-                 f"{pe('❌')} Bekor qilingan: <b>{s['st_cancelled']} ta</b>\n\n"
-                 f"{pe('💰')} <b>Tasdiqlangan buyurtmalar summasi: {money(float(s['confirmed_usd']))} $</b>",
+                 f"{pe('✅')} Tasdiqlangan: <b>{s['st_confirmed']} ta</b> — "
+                 f"<b>{money(float(s['confirmed_usd']))} $</b>\n"
+                 f"{pe('❌')} Bekor qilingan: <b>{s['st_cancelled']} ta</b> — "
+                 f"<b>{money(float(s['cancelled_usd']))} $</b>\n\n"
+                 f"{pe('💳')} <b>O'rtacha chek: {money(avg)} $</b>",
                  rows([("🔄 Yangilash", "adm:stat", "primary")], [HOME]))
 
 
@@ -349,14 +408,18 @@ async def adm_export(cb: CallbackQuery):
     rows_ = await db.export_rows()
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
-    w.writerow(["ID", "Sana", "User ID", "Username", "Telegram ismi", "Buyurtmachi", "Telefon", "Eni mm",
-                "Balandligi mm", "Soni", "Oyna", "Rang", "Furnitura", "Furnitura/fasad", "Ruchka", "Yetkazish",
-                "USD", "Kurs", "So'm", "Buyurtma vaqti", "Holat", "Kim o'zgartirdi"])
+    w.writerow(["ID", "Sana", "User ID", "Username", "Telegram ismi", "Buyurtmachi", "Telefon",
+                "Fasadlar (bo'yi x eni mm)", "Soni", "Oyna", "Rang", "Furnitura", "Furnitura/fasad",
+                "Ruchka", "Yetkazish", "USD", "Kurs", "So'm", "Buyurtma vaqti", "Holat", "Kim o'zgartirdi"])
     for r in rows_:
+        dims = " | ".join(f"{f['h']}x{f['w']}" for f in facades_of(r))
+        hs = "; ".join(f"{i}:{HANDLE_NAME[f['handle']]}" for i, f in enumerate(facades_of(r), 1)
+                       if f.get("handle")) or "yo'q"
+        fs = "; ".join(f"{i}:{f.get('fit', 0)}" for i, f in enumerate(facades_of(r), 1)) or "yo'q"
         w.writerow([r["id"], r["created_at"], r["user_id"], r["username"] or "", r["full_name"] or "",
-                    r["customer_name"] or "", r["phone"] or "", r["width"], r["height"], r["count"],
-                    pname(r["glass"]), pname(r["color"]), pname(r["fitting"]), r["fitting_count"],
-                    r["handle"] or "yo'q", "ha" if r["delivery"] else "yo'q", r["usd"], r["rate"], r["total_sum"],
+                    r["customer_name"] or "", r["phone"] or "", dims, len(facades_of(r)),
+                    pname(r["glass"]), pname(r["color"]), pname(r["fitting"]), fs,
+                    hs, "ha" if r["delivery"] else "yo'q", r["usd"], r["rate"], r["total_sum"],
                     r["ordered_at"] or "", STATUS_NAME.get(r["status"], "Faqat hisob"), r["status_by"] or ""])
     data = buf.getvalue().encode("utf-8-sig")  # BOM — Excel o'zbekcha harflarni to'g'ri ochadi
     await cb.message.answer_document(BufferedInputFile(data, "hisoblar.csv"),
@@ -653,10 +716,27 @@ def setting_str(key):
     return f"{num(db.settings[key])} {unit}"
 
 
+# Har bir umumiy narx qayerda ishlatilishini tushuntirish
+SETTING_HELP = {
+    "profile": "Fasad perimetri bo'yicha — profilning har bir metri uchun",
+    "handle_profile": "Ruchkali tomon (balandlik) — uning har bir metri uchun",
+    "assembly_low": "Balandligi 1000 mm gacha bo'lgan har bir fasad uchun",
+    "assembly_high": "Balandligi 1000 mm dan baland bo'lgan har bir fasad uchun",
+    "corner": "Har bir fasadga 4 dona ugolnik",
+    "rubber": "Profilning har bir metri uchun rezinka",
+    "delivery": "Shahar bo'ylab yetkazib berish (so'mda, jami summaga qo'shiladi)",
+    "fallback_rate": "CBU kursi olinmasa ishlatiladigan zaxira kurs (so'm)",
+}
+
+
 async def show_settings(msg: Message, edit=True, notice=None):
+    lst = "\n".join(f"• <b>{name}</b> — {setting_str(k)}\n"
+                      f"  <i>{SETTING_HELP[k]}</i>"
+                      for k, (name, _, _) in P.SETTINGS.items())
     text = (notice_line(notice) + head(["Umumiy narxlar"], f"{pe('⚙')} <b>UMUMIY NARXLAR</b>")
             + "Bu narxlar har bir hisob-kitobda ishlatiladi.\n\n"
-            f"✏️ O'zgartirish uchun <b>kerakli narx ustiga</b> bosing {pe('👇')}")
+            + lst
+            + f"\n\n✏️ O'zgartirish uchun <b>kerakli narx ustiga</b> bosing {pe('👇')}")
     buttons = [[(f"{name} — {setting_str(k)}", f"adm:s:{k}")] for k, (name, _, _) in P.SETTINGS.items()]
     await screen(msg, text, rows(*buttons, [HOME]), edit=edit)
 
@@ -675,8 +755,11 @@ async def adm_setting_pick(cb: CallbackQuery, state: FSMContext):
         return await cb.answer()
     await cb.answer()
     name, unit, _ = P.SETTINGS[key]
-    await ask(cb.message, state, AdminForm.setting, head(["Umumiy narxlar", name], f"⚙️ <b>{name}</b>")
-              + f"💵 <b>Yangi qiymatni yozing</b> ({unit})\nHozirgi: <b>{setting_str(key)}</b>", "adm:set", key=key)
+    await ask(cb.message, state, AdminForm.setting,
+              head(["Umumiy narxlar", name], f"⚙️ <b>{name}</b>")
+              + f"<i>{SETTING_HELP[key]}</i>\n\n"
+              + f"💵 <b>Yangi qiymatni yozing</b> ({unit})\nHozirgi: <b>{setting_str(key)}</b>",
+              "adm:set", key=key)
 
 
 @dp.message(AdminForm.setting, is_admin, NOT_CMD)
@@ -746,6 +829,173 @@ async def broadcast(bot: Bot, admin_chat, from_chat, message_id, ids):
                            reply_markup=rows([HOME]))
 
 
+# --- Buyurtmalar tarixi ---
+
+ORD_PER_PAGE = 10
+
+
+def order_line(o):
+    """Tarixdagi bitta buyurtma qatori."""
+    who = o["customer_name"] or o["full_name"] or "-"
+    st = STATUS_NAME.get(o["status"]) or "Tasdiqlanmagan"
+    return (f"#{o['id']} · {o['created_str']} · {html.escape(who)}"
+            f" · <b>{money(float(o['usd']))} $</b> · {st}")
+
+
+async def show_orders(msg: Message, page=0, edit=True, notice=None):
+    """Buyurtmalar tarixi (sahifalangan)."""
+    lst = await db.orders(page, ORD_PER_PAGE)
+    total = await db.order_count()
+    pages = max(1, -(-total // ORD_PER_PAGE))
+    body = "\n".join(order_line(o) for o in lst) or "Hozircha buyurtma yo'q."
+    text = (notice_line(notice) + head(["Buyurtmalar"], f"📋 <b>BUYURTMALAR TARIXI</b>")
+            + f"Jami: <b>{total} ta</b> · sahifa <b>{page + 1}/{pages}</b>\n\n"
+            + body
+            + "\n\nBuyurtma ustiga bosing — tafsilotlari va holati.")
+    buttons = [[(f"#{o['id']} · {STATUS_NAME.get(o['status'], '-')}", f"adm:ord:{o['id']}")]
+               for o in lst]
+    nav = []
+    if page > 0:
+        nav.append(("⬅️ Orqaga", f"adm:ords:{page - 1}", "primary"))
+    if (page + 1) * ORD_PER_PAGE < total:
+        nav.append(("Oldinga ➡️", f"adm:ords:{page + 1}", "primary"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([("🔍 Qidiruv", "adm:find", "primary")])
+    buttons.append([HOME])
+    await screen(msg, text, rows(*buttons), edit=edit)
+
+
+async def show_order_list(msg: Message, lst, title, edit=True, notice=None):
+    """Qidiruv natijalari ro'yxati."""
+    text = (notice_line(notice) + head(["Buyurtmalar"], title)
+            + ("\n".join(order_line(o) for o in lst) or "Hech narsa topilmadi."))
+    buttons = [[(f"#{o['id']} · {STATUS_NAME.get(o['status'], '-')}", f"adm:ord:{o['id']}")]
+               for o in lst]
+    buttons.append([("⬅️ Tarixga qaytish", "adm:ords:0"), HOME])
+    await screen(msg, text, rows(*buttons), edit=edit)
+
+
+async def show_order_detail(msg: Message, calc_id, edit=True, notice=None):
+    """Bitta buyurtmaning to'liq kartasi (admin ko'rishi)."""
+    o = await db.get_order(calc_id)
+    if not o:
+        return await msg.answer("❌ Buyurtma topilmadi.")
+    lang = await db.get_lang(o["user_id"]) or "uz"
+    tg = (f"@{o['username']}" if o["username"]
+          else f'<a href="tg://user?id={o["user_id"]}">{html.escape(o["full_name"] or "profil")}</a>')
+    status = o["status"]            # None — mijoz hali tasdiqlamagan hisob-kitob
+    label = STATUS_NAME.get(status) or "Tasdiqlanmagan"
+    text = (notice_line(notice) + user_card(o, lang)
+            + f"\n{pe('💬')} <b>Telegram:</b> {tg}"
+            + f"\n{pe('🌐')} <b>Mijoz tili:</b> {LANG_NAME[lang]}"
+            + f"\n{pe('🛠')} <b>Holat: {label}</b>")
+    if status:
+        text += f"\n👤 <b>{html.escape(o['status_by'] or '-')}</b> · {o['status_str']}"
+    if status in (None, "new"):
+        markup = rows([("✅ Tasdiqlandi", f"aord:ok:{calc_id}", "success", "✅"),
+                       ("❌ Bekor qilindi", f"aord:no:{calc_id}", "danger", "❌")],
+                      [("⬅️ Tarixga qaytish", "adm:ords:0"), HOME])
+    else:
+        markup = rows([("⬅️ Tarixga qaytish", "adm:ords:0"), HOME])
+    await screen(msg, text, markup, edit=edit)
+
+
+@dp.callback_query(F.data == "adm:orders", is_admin)
+async def adm_orders(cb: CallbackQuery):
+    await cb.answer()
+    await show_orders(cb.message, 0, edit=True)
+
+
+@dp.callback_query(F.data.startswith("adm:ords:"), is_admin)
+async def adm_orders_page(cb: CallbackQuery):
+    await cb.answer()
+    await show_orders(cb.message, int(cb.data[9:]), edit=True)
+
+
+@dp.callback_query(F.data.startswith("adm:ord:"), is_admin)
+async def adm_order_detail(cb: CallbackQuery):
+    await cb.answer()
+    await show_order_detail(cb.message, int(cb.data[8:]), edit=True)
+
+
+@dp.callback_query(F.data == "adm:find", is_admin)
+async def adm_find(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await ask(cb.message, state, AdminForm.find,
+              head(["Buyurtmalar"], "🔍 <b>BUYURTMA QIDIRUV</b>")
+              + "Buyurtma <b>ID</b>si, mijoz <b>ismi</b>, <b>telefoni</b> yoki "
+              "<b>username</b>ini yozing:\n<i>Masalan: 12 yoki Aliyev yoki 99890</i>",
+              "adm:orders")
+
+
+@dp.message(AdminForm.find, is_admin, NOT_CMD)
+async def adm_find_set(msg: Message, state: FSMContext):
+    q = " ".join((msg.text or "").split())
+    await clean_input(msg, state)
+    if not q:
+        return await msg.answer("❌ Qidiruv so'zini yozing.")
+    results = await db.search_orders(q)
+    await show_order_list(msg, results, f"🔍 <b>«{html.escape(q)}» BO'YICHA QIDIRUV</b>",
+                            edit=False, notice=f"Topildi: <b>{len(results)} ta</b> (ko'pi 50 ta)")
+
+
+@dp.callback_query(F.data.startswith("aord:"), is_admin)
+async def admin_order_decision(cb: CallbackQuery):
+    """Admin panelidan buyurtma holatini o'zgartirish."""
+    _, action, calc_id = cb.data.split(":")
+    calc_id = int(calc_id)
+    status = "confirmed" if action == "ok" else "cancelled"
+    who = cb.from_user.full_name + (f" (@{cb.from_user.username})" if cb.from_user.username else "")
+    changed = await db.set_status(calc_id, status, who, order=(status == "confirmed"))
+    o = await db.get_order(calc_id)
+    if not o:
+        return await cb.answer("Buyurtma topilmadi.", show_alert=True)
+    lang = await db.get_lang(o["user_id"]) or "uz"
+    if not changed:
+        return await cb.answer(f"Bu buyurtma allaqachon: {STATUS_NAME.get(o['status'], '-')}",
+                               show_alert=True)
+    await cb.answer("✅ Tasdiqlandi" if status == "confirmed" else "❌ Bekor qilindi")
+    await show_order_detail(cb.message, calc_id, edit=True,
+                            notice=f"✅ Holat: <b>{STATUS_NAME[status]}</b> ({html.escape(who)})")
+    try:
+        await cb.bot.send_message(
+            o["user_id"],
+            t(lang, "notify_confirmed" if status == "confirmed" else "notify_cancelled", id=o["id"]))
+    except Exception:
+        logging.exception("Mijozga holatni yuborib bo'lmadi: %s", o["user_id"])
+
+
+# --- Bloklangan mijozlar ---
+
+
+async def show_blocked(msg: Message, edit=True, notice=None):
+    users = await db.blocked_users()
+    text = (notice_line(notice) + head(["Mijozlar"], f"🚫 <b>BLOKLANGAN MIJOZLAR</b>")
+            + (f"Jami: <b>{len(users)} ta</b> — ularga xabar yetib bormagan.\n\n"
+               if users else "Hech kim bloklanmagan.\n\n")
+            + "\n".join(f"• {user_line(u)}" for u in users)
+            + ("\n\nMijoz /start qilsa — blok o'zi ochiladi." if users else ""))
+    buttons = [[(f"Blokdan olish — {u.id}", f"adm:unblock:{u.id}", "success")] for u in users]
+    buttons.append([HOME])
+    await screen(msg, text, rows(*buttons), edit=edit)
+
+
+@dp.callback_query(F.data == "adm:blocked", is_admin)
+async def adm_blocked(cb: CallbackQuery):
+    await cb.answer()
+    await show_blocked(cb.message, edit=True)
+
+
+@dp.callback_query(F.data.startswith("adm:unblock:"), is_admin)
+async def adm_unblock(cb: CallbackQuery):
+    uid = int(cb.data.split(":")[2])
+    await db.unblock_user(uid)
+    await cb.answer("✅ Blok olishildi")
+    await show_blocked(cb.message, edit=True,
+                       notice="✅ Mijoz blokdan olindi — keyingi xabar yetib boradi.")
+
+
 # ================= Guruhdagi buyurtma: admin qarori =================
 
 STATUS = {  # holat: (emoji, sarlavha, hashtag)
@@ -756,14 +1006,33 @@ STATUS = {  # holat: (emoji, sarlavha, hashtag)
 LANG_NAME = {"uz": "O'zbekcha", "ru": "Ruscha"}
 
 
+def handle_summary(o, lang):
+    """Ruchka holati: faqat ruchkali fasadlar sanab o'tiladi (1-fasad: O'ng tomonda; ...)."""
+    hs = [(i, f["handle"]) for i, f in enumerate(facades_of(o), 1) if f.get("handle")]
+    if not hs:
+        return t(lang, "handle_none")
+    return "; ".join(f"{i} — {t(lang, f'handle_{h}')}" for i, h in hs)
+
+
+def fit_summary(o):
+    """Furnitura soni xulosi: hammasi bir xil bo'lsa — 'X dona/fasad',
+    turli bo'lsa — har bir fasad alohida."""
+    fs = [f.get("fit", 0) for f in facades_of(o)]
+    if not fs:
+        return "0 dona/fasad"
+    if len(set(fs)) == 1:
+        return f"{fs[0]} dona/fasad"
+    return ", ".join(f"{i}-fasad {v} dona" for i, v in enumerate(fs, 1))
+
+
 def order_body(o, lang="uz"):
     """Buyurtma tafsilotlari (o — db.get_order qatori). Mijozga uning tilida, guruhga o'zbekcha."""
     return t(lang, "order_body",
              name=html.escape(o["customer_name"] or "-"), phone=o["phone"] or "-",
-             w=o["width"], h=o["height"], count=o["count"],
+             dims=dims_block(o, lang), count=len(facades_of(o)),
              glass=html.escape(pname(o["glass"], lang)), color=html.escape(pname(o["color"], lang)),
-             fitting=html.escape(pname(o["fitting"], lang)), fc=o["fitting_count"],
-             handle=t(lang, f"handle_{o['handle'] or 'none'}"),
+             fitting=html.escape(pname(o["fitting"], lang)), fit=fit_summary(o),
+             handle=handle_summary(o, lang),
              delivery=t(lang, "delivery_yes" if o["delivery"] else "delivery_no"),
              usd=money(float(o["usd"])), sum=money(o["total_sum"]), rate=num(float(o["rate"])),
              with_dlv=t(lang, "with_delivery") if o["delivery"] else "")
@@ -890,7 +1159,9 @@ def visible(kind, key):
     return p if p and p["kind"] == kind and not p["hidden"] and not p["deleted"] else None
 
 
-# ================= 1-2. O'lchamlar va soni =================
+# ================= 1-2. Fasad soni va har bir fasad o'lchami =================
+# Tartib: avval nechta fasad, keyin har bir fasaddi alohida so'raladi.
+# Har bir fasadda AVVAL BO'YI, keyin ENI kiritiladi ("1800 900").
 
 @dp.message(CommandStart())
 async def start(msg: Message, state: FSMContext, user=None):
@@ -899,50 +1170,97 @@ async def start(msg: Message, state: FSMContext, user=None):
     await state.clear()
     lang = await db.get_lang(user.id)
     if not lang:  # birinchi marta — avval til
-        return await msg.answer("🌐 <b>Tilni tanlang</b>\n🌐 <b>Выберите язык</b>", reply_markup=LANG_KB)
+        return await msg.answer("🌐 <b>Tilni tanlang</b>\n🌐 <b>Выберите язык</b>\n", reply_markup=LANG_KB)
     await begin(msg, state, lang)
 
 
 async def begin(msg: Message, state: FSMContext, lang):
     await state.clear()
-    await msg.answer(t(lang, "welcome") + step(lang, 1) + t(lang, "ask_width"), reply_markup=ReplyKeyboardRemove())
-    await state.set_state(Form.width)
-
-
-@dp.message(Form.width)
-async def width(msg: Message, state: FSMContext):
-    lang = await lang_of(msg.from_user.id)
-    v = parse_int(msg.text, 1, P.MAX_MM)
-    if not v:
-        return await msg.answer(t(lang, "err_width"))
-    await state.update_data(width=v)
-    await msg.answer(step(lang, 2) + t(lang, "ask_height"))
-    await state.set_state(Form.height)
-
-
-@dp.message(Form.height)
-async def height(msg: Message, state: FSMContext):
-    lang = await lang_of(msg.from_user.id)
-    v = parse_int(msg.text, 1, P.MAX_MM)
-    if not v:
-        return await msg.answer(t(lang, "err_height"))
-    await state.update_data(height=v)
-    await msg.answer(step(lang, 3) + t(lang, "ask_count"))
+    await msg.answer(t(lang, "welcome") + step(lang, 1) + t(lang, "ask_count"), reply_markup=ReplyKeyboardRemove())
     await state.set_state(Form.count)
 
 
 @dp.message(Form.count)
 async def count(msg: Message, state: FSMContext):
     lang = await lang_of(msg.from_user.id)
-    v = parse_int(msg.text, 1, 1000)
+    v = parse_int(msg.text, 1, P.MAX_FACADES)
     if not v:
         return await msg.answer(t(lang, "err_count"))
-    await state.update_data(count=v)
-    await send_carousel(msg, "glass", lang)
-    await state.set_state(Form.glass)
+    await state.update_data(facades=[], n=v)
+    await ask_dims(msg, state, lang)
 
 
-# ================= 3-4. Oyna va rang =================
+async def ask_dims(msg: Message, state: FSMContext, lang):
+    """Navbatdagi fasad BO'YINI so'raydi — chizma bilan (bo'yi o'qi yashil)."""
+    d = await state.get_data()
+    n = len(d["facades"]) + 1
+    await send_diagram(msg, lang, n=n, n_all=d["n"], ask="h",
+                       caption=step(lang, 2) + t(lang, "ask_facade_dims", n=n, i=n, n_all=d["n"]))
+    await state.set_state(Form.dims)
+
+
+async def ask_width(msg: Message, state: FSMContext, lang, height):
+    """Bo'yi kiritilgach ENINI so'raydi — chizma endi bo'yini yashil ko'rsatadi."""
+    d = await state.get_data()
+    n = len(d["facades"]) + 1
+    await send_diagram(msg, lang, n=n, n_all=d["n"], height=height, ask="w",
+                       caption=step(lang, 2) + t(lang, "ask_width", n=n, i=n, n_all=d["n"], h=height))
+    await state.set_state(Form.width)
+
+
+def parse_dims(text, hi=P.MAX_MM):
+    """"1800 900" -> (bo'yi 1800, eni 900) yoki None. Avval bo'yi, keyin eni.
+    Ikkalasi bir xabarda yuborilsa ham ishlaydi (eski qulaylik saqlanadi)."""
+    parts = (text or "").replace(",", " ").replace("x", " ").replace("×", " ").split()
+    vals = [parse_int(p, 1, hi) for p in parts]
+    return tuple(vals) if len(vals) == 2 and all(vals) else None
+
+
+@dp.message(Form.dims)
+async def dims(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
+    both = parse_dims(msg.text)
+    if both:                       # mijoz "1800 900" deb ikkisini birdan yozsa
+        return await save_facade(msg, state, lang, both[0], both[1])
+    height = parse_int(msg.text, 1, P.MAX_MM)
+    if not height:
+        return await msg.answer(t(lang, "err_facade_dims"))
+    await state.update_data(h=height)
+    await ask_width(msg, state, lang, height)
+
+
+@dp.message(Form.width)
+async def width(msg: Message, state: FSMContext):
+    lang = await lang_of(msg.from_user.id)
+    w = parse_int(msg.text, 1, P.MAX_MM)
+    if not w:
+        return await msg.answer(t(lang, "err_width"))
+    await save_facade(msg, state, lang, (await state.get_data())["h"], w)
+
+
+async def save_facade(msg: Message, state: FSMContext, lang, height, width):
+    """Fasadni saqlaydi va kiritilgan o'lchamni chizma bilan ko'rsatadi."""
+    d = await state.get_data()
+    facades = d["facades"] + [{"w": width, "h": height, "handle": None, "fit": None}]
+    await state.update_data(facades=facades, h=None)
+    # chizma: ikkala o'q ham yashil — mijoz kiritganini ko'radi
+    await send_diagram(msg, lang, n=len(facades), n_all=d["n"], height=height, width=width,
+                       caption=t(lang, "facade_saved", n=len(facades), h=height, w=width))
+    if len(facades) < d["n"]:
+        return await ask_dims(msg, state, lang)
+    await msg.answer(t(lang, "all_dims_done", n=len(facades)))
+    await ask_handle(msg, state, lang)
+
+
+async def ask_handle(msg: Message, state: FSMContext, lang):
+    """3-qadam: ruchkali yoki ruchkasiz."""
+    await msg.answer(step(lang, 3) + t(lang, "ask_handle"),
+                     reply_markup=grid([(t(lang, "b_handle_yes"), "handle:yes", "primary"),
+                                        (t(lang, "b_handle_no"), "handle:no", "primary")], 2))
+    await state.set_state(Form.handle)
+
+
+# ================= 4-5. Oyna va rang =================
 
 @dp.callback_query(Form.glass, F.data.startswith("glass:"))
 async def glass(cb: CallbackQuery, state: FSMContext):
@@ -972,7 +1290,7 @@ async def color(cb: CallbackQuery, state: FSMContext):
     await state.set_state(Form.fitting)
 
 
-# ================= 5-6. Furnitura =================
+# ================= 6. Furnitura turi =================
 
 @dp.callback_query(Form.fitting, F.data.startswith("fit:"))
 async def fitting(cb: CallbackQuery, state: FSMContext):
@@ -983,31 +1301,122 @@ async def fitting(cb: CallbackQuery, state: FSMContext):
     await state.update_data(fitting=p["key"])
     await cb.answer()
     await cb.message.edit_text(t(lang, "chosen_fitting", name=html.escape(pname(p["key"], lang))))
-    await cb.message.answer(step(lang, 7) + t(lang, "ask_fit_count"))
-    await state.set_state(Form.fitting_count)
+    await show_fit_list(cb.message, state, lang, edit=False)
 
 
-@dp.message(Form.fitting_count)
-async def fitting_count(msg: Message, state: FSMContext):
+# ================= 7. Furnitura soni (har bir fasad alohida) =================
+# Ruchka tanlash oqimiga o'xshash: fasadlar ro'yxati -> son kiritish -> Tasdiqlash.
+
+def fit_btn(lang, i, f, prefix="ff"):
+    """Furnitura ro'yxatidagi bitta fasad tugmasi: soni kiritilganmi ko'rinadi."""
+    label = (t(lang, "b_fit_marked", n=i, h=f["h"], w=f["w"], v=f["fit"])
+             if f.get("fit") is not None else t(lang, "b_fit", n=i, h=f["h"], w=f["w"]))
+    return (label, f"{prefix}:{i}", "success" if f.get("fit") is not None else None)
+
+
+async def show_fit_list(msg: Message, state: FSMContext, lang, edit=True, notice=None):
+    """Har bir fasadga furnitura soni kiritiladi. Hammasi kiritilgach 'Tayyor' tugmasi chiqadi."""
+    d = await state.get_data()
+    facades = d["facades"]
+    done = sum(1 for f in facades if f.get("fit") is not None)
+    all_done = done == len(facades)
+    rows_ = [[fit_btn(lang, i, f)] for i, f in enumerate(facades, 1)]
+    if all_done:
+        rows_.append([(t(lang, "b_fits_done"), "fdone", "success", "✅")])
+    else:
+        rows_.append([(t(lang, "fits_progress", done=done, n=len(facades)), "fnone")])
+    text = (notice_line(notice) + step(lang, 7) + t(lang, "ask_fit_list",
+                                                      n=len(facades),
+                                                      fitting=pname(d["fitting"], lang))
+            + "\n\n" + (t(lang, "a_all_fits_done") if all_done else ""))
+    await screen(msg, text, rows(*rows_), edit=edit)
+    await state.set_state(Form.fit_list)
+
+
+@dp.callback_query(F.data == "fnone")
+async def fit_none_btn(cb: CallbackQuery):
+    await cb.answer()  # faqat ko'rsatma tugmasi — hech narsa qilmaydi
+
+
+@dp.callback_query(F.data.startswith("ff:"), Form.fit_list)
+async def fit_pick(cb: CallbackQuery, state: FSMContext):
+    """Tanlangan fasad uchun furnitura sonini so'raydi."""
+    lang = await lang_of(cb.from_user.id)
+    i = int(cb.data.split(":")[1])
+    d = await state.get_data()
+    if not 1 <= i <= len(d["facades"]):
+        return await cb.answer()
+    f = d["facades"][i - 1]
+    await state.update_data(ff=i)
+    await cb.answer()
+    cur = f"\n<i>Hozirgi: {f['fit']} dona</i>" if f.get("fit") is not None else ""
+    m = await screen(cb.message, step(lang, 7) + t(lang, "ask_fit", n=i, h=f["h"], w=f["w"], cur=cur),
+                 grid([(t(lang, "b_facade_list"), "flist")], 1), edit=True)
+    await state.update_data(fit_prompt_id=m.message_id)
+    await state.set_state(Form.fit)
+
+
+@dp.callback_query(F.data == "flist", Form.fit_list)
+async def fit_back(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
+    await cb.answer()
+    await show_fit_list(cb.message, state, lang, edit=True)
+
+
+@dp.callback_query(F.data == "flist", Form.fit)
+async def fit_back_from_entry(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
+    await cb.answer()
+    await show_fit_list(cb.message, state, lang, edit=True)
+
+
+@dp.message(Form.fit)
+async def fit_set(msg: Message, state: FSMContext):
     lang = await lang_of(msg.from_user.id)
     v = parse_int(msg.text, 0, 20)
     if v is None:
         return await msg.answer(t(lang, "err_fit_count"))
-    await state.update_data(fitting_count=v)
-    await msg.answer(step(lang, 8) + t(lang, "ask_handle"),
-                     reply_markup=grid([(t(lang, "b_handle_yes"), "handle:yes", "primary"),
-                                        (t(lang, "b_handle_no"), "handle:no", "primary")], 2))
-    await state.set_state(Form.handle)
+    d = await state.get_data()
+    i = d["ff"]
+    facades = [{**f} for f in d["facades"]]
+    facades[i - 1]["fit"] = v
+    await state.update_data(facades=facades, ff=None)
+    # so'rov xabarini o'chiramiz (chat tozaligi uchun)
+    try:
+        await msg.bot.delete_message(msg.chat.id, d.get("fit_prompt_id"))
+    except Exception:
+        pass
+    await show_fit_list(msg, state, lang, edit=False,
+                        notice=t(lang, "fit_saved", n=i, v=v))
 
 
-# ================= 7-8. Ruchka =================
+@dp.callback_query(F.data == "fdone", Form.fit_list)
+async def fit_done(cb: CallbackQuery, state: FSMContext):
+    """Barcha fasadlar kiritilgan — yetkazib berishga o'tamiz."""
+    lang = await lang_of(cb.from_user.id)
+    d = await state.get_data()
+    left = [i for i, f in enumerate(d["facades"], 1) if f.get("fit") is None]
+    if left:
+        return await cb.answer(t(lang, "err_fits_left",
+                                 left=", ".join(f"{i}-fasad" for i in left)), show_alert=True)
+    await cb.answer(t(lang, "a_all_fits_done"))
+    await ask_delivery(cb.message, state, lang)
+
+
+# ================= 3. Ruchka (o'lchamlardan keyin) =================
 
 async def ask_delivery(msg: Message, state: FSMContext, lang):
-    await msg.answer(step(lang, 9) + t(lang, "ask_delivery"),
+    await msg.answer(step(lang, 8) + t(lang, "ask_delivery"),
                      reply_markup=grid([(t(lang, "b_delivery_yes", sum=money(round(db.settings["delivery"]))),
                                          "dlv:yes", "primary", "🚚"),
                                         (t(lang, "b_delivery_no"), "dlv:no", "primary", "🏠")]))
     await state.set_state(Form.delivery)
+
+
+async def go_glass(msg: Message, state: FSMContext, lang):
+    """Ruchka belgilanib bo'lingach — oyna turiga o'tamiz (4-qadam)."""
+    await send_carousel(msg, "glass", lang)
+    await state.set_state(Form.glass)
 
 
 @dp.callback_query(Form.handle, F.data.startswith("handle:"))
@@ -1015,27 +1424,100 @@ async def handle(cb: CallbackQuery, state: FSMContext):
     lang = await lang_of(cb.from_user.id)
     await cb.answer()
     if cb.data == "handle:yes":
-        await cb.message.edit_text(t(lang, "ask_side"),
-                                   reply_markup=grid([(t(lang, "b_left"), "side:chap", "primary"),
-                                                      (t(lang, "b_right"), "side:ong", "primary")], 2))
-        await state.set_state(Form.side)
+        await show_handle_list(cb.message, state, lang, edit=True)
     else:
-        await state.update_data(side=None)
+        d = await state.get_data()
+        facades = [{**f, "handle": None} for f in d["facades"]]
+        await state.update_data(facades=facades)
         await cb.message.edit_text(t(lang, "chosen_handle", v=t(lang, "handle_none")))
-        await ask_delivery(cb.message, state, lang)
+        await go_glass(cb.message, state, lang)
 
 
-@dp.callback_query(Form.side, F.data.in_({"side:chap", "side:ong"}))
+def facade_btn(lang, i, f, prefix="hf"):
+    """Ruchka ro'yxatidagi bitta fasad tugmasi: belgilanganmi yo'qmi ko'rinadi."""
+    label = (t(lang, "b_facade_marked", n=i, h=f["h"], w=f["w"], v=t(lang, f"handle_{f['handle']}"))
+             if f["handle"] else t(lang, "b_facade", n=i, h=f["h"], w=f["w"]))
+    return (label, f"{prefix}:{i}", "success" if f["handle"] else None)
+
+
+async def show_handle_list(msg: Message, state: FSMContext, lang, edit=True, notice=None):
+    """Ruchkali fasadlar ro'yxati. Hammasi belgilangach 'Tayyor' tugmasi chiqadi."""
+    d = await state.get_data()
+    facades = d["facades"]
+    done = sum(1 for f in facades if f["handle"])
+    all_done = done == len(facades)
+    rows_ = [[facade_btn(lang, i, f)] for i, f in enumerate(facades, 1)]
+    if all_done:
+        rows_.append([(t(lang, "b_handles_done"), "hdone", "success", "✅")])
+    else:
+        rows_.append([(t(lang, "handles_progress", done=done, n=len(facades)), "hnone")])
+    text = (notice_line(notice) + step(lang, 3) + t(lang, "ask_handle_list", n=len(facades))
+            + "\n\n" + (t(lang, "a_all_handles_done") if all_done else ""))
+    await screen(msg, text, rows(*rows_), edit=edit)
+    await state.set_state(Form.side)
+
+
+@dp.callback_query(F.data == "hnone")
+async def handle_none_btn(cb: CallbackQuery):
+    await cb.answer()  # faqat ko'rsatma tugmasi — hech narsa qilmaydi
+
+
+@dp.callback_query(F.data.startswith("hf:"), Form.side)
+async def handle_pick(cb: CallbackQuery, state: FSMContext):
+    """Tanlangan fasad uchun ruchka tomonini so'raydi (Chap / O'ng)."""
+    lang = await lang_of(cb.from_user.id)
+    i = int(cb.data.split(":")[1])
+    d = await state.get_data()
+    if not 1 <= i <= len(d["facades"]):
+        return await cb.answer()
+    f = d["facades"][i - 1]
+    await state.update_data(hf=i)
+    await cb.answer()
+    await screen(cb.message, step(lang, 3) + t(lang, "ask_side", n=i, h=f["h"], w=f["w"]),
+                 grid([(t(lang, "b_left"), f"side:{i}:chap", "primary"),
+                       (t(lang, "b_right"), f"side:{i}:ong", "primary"),
+                       (t(lang, "b_facade_list"), "hlist")], 1), edit=True)
+
+
+@dp.callback_query(F.data == "hlist", Form.side)
+async def handle_back(cb: CallbackQuery, state: FSMContext):
+    lang = await lang_of(cb.from_user.id)
+    await cb.answer()
+    await show_handle_list(cb.message, state, lang, edit=True)
+
+
+@dp.callback_query(F.data.startswith("side:"), Form.side)
 async def side(cb: CallbackQuery, state: FSMContext):
     lang = await lang_of(cb.from_user.id)
-    s = cb.data.split(":")[1]
-    await state.update_data(side=s)
+    _, i, s = cb.data.split(":")
+    d = await state.get_data()
+    i = int(i)
+    if not 1 <= i <= len(d["facades"]):
+        return await cb.answer()
+    facades = [{**f} for f in d["facades"]]
+    facades[i - 1]["handle"] = s
+    await state.update_data(facades=facades, hf=None)
     await cb.answer()
-    await cb.message.edit_text(t(lang, "chosen_handle", v=t(lang, f"handle_{s}")))
-    await ask_delivery(cb.message, state, lang)
+    f = facades[i - 1]
+    await show_handle_list(cb.message, state, lang, edit=True,
+                           notice=t(lang, "chosen_handle", v=t(lang, f"handle_{s}"))
+                           + f"  ·  {t(lang, 'facade_saved', n=i, h=f['h'], w=f['w'])}")
 
 
-# ================= 9. Yetkazish -> hisob, ism, telefon =================
+@dp.callback_query(F.data == "hdone", Form.side)
+async def handle_done(cb: CallbackQuery, state: FSMContext):
+    """Barcha fasadlar belgilangan — oyna turiga o'tamiz (4-qadam)."""
+    lang = await lang_of(cb.from_user.id)
+    d = await state.get_data()
+    left = [i for i, f in enumerate(d["facades"], 1) if not f["handle"]]
+    if left:
+        return await cb.answer(t(lang, "err_handles_left",
+                                 left=", ".join(f"{i}-fasad" for i in left)), show_alert=True)
+    await cb.answer(t(lang, "a_all_handles_done"))
+    await go_glass(cb.message, state, lang)
+
+
+# ================= 8. Yetkazish -> hisob, ism, telefon =================
 
 def phone_kb(lang):
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t(lang, "b_send_phone"), request_contact=True,
@@ -1056,7 +1538,9 @@ async def delivery(cb: CallbackQuery, state: FSMContext):
     # mahsulot hisob o'rtasida o'chirilgan bo'lsa ham oxirgi ma'lum narx bilan hisoblanadi
     glass_price = db.products[d["glass"]]["price"] or 0
     fitting_price = db.products[d["fitting"]]["price"] or 0
-    usd = P.calc_usd(s, d["width"], d["height"], d["count"], glass_price, fitting_price, d["fitting_count"], d["side"])
+    # har bir fasad o'lchami, ruchkasi va furnitura soni alohida
+    usd = P.calc_total(s, [(f["w"], f["h"], f["handle"], f.get("fit") or 0)
+                           for f in d["facades"]], glass_price, fitting_price)
     total_sum = P.calc_sum(s, usd, rate, dlv)
     d.update(delivery=dlv)
     await db.upsert_user(cb.from_user)

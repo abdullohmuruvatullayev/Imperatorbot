@@ -3,6 +3,7 @@ Mahsulotlar (oyna, rang, furnitura) va sozlamalar bazada saqlanadi, admin paneld
 Bu yerdagi ro'yxat faqat baza bo'sh bo'lganda (birinchi ishga tushishda) yoziladi."""
 
 MAX_MM = 2800
+MAX_FACADES = 100  # bitta buyurtmada nechta fasad bo'lishi mumkin
 
 # kind -> [(key, nomi, narx)]. Oyna: USD/m², furnitura: USD/dona, rang: narxsiz.
 SEED = {
@@ -42,23 +43,34 @@ SETTINGS = {
 }
 
 
-def calc_usd(p, width_mm, height_mm, count, glass_price, fitting_price, fittings_per_facade, handle):
-    """p: sozlamalar {kalit: qiymat}. handle: None (ruchkasiz), 'chap' yoki 'ong'. Bitta fasad x count."""
+def calc_facade(p, width_mm, height_mm, glass_price, fitting_price, fittings_per_facade, handle):
+    """Bitta fasad narxi. handle: None (ruchkasiz), 'chap' yoki 'ong'."""
     w, h = width_mm / 1000, height_mm / 1000
     perimeter = 2 * (w + h)
     if handle:
         profile = h * p["handle_profile"] + (perimeter - h) * p["profile"]
     else:
         profile = perimeter * p["profile"]
-    per_facade = (
-        profile
-        + w * h * glass_price
-        + fittings_per_facade * fitting_price
-        + (p["assembly_low"] if height_mm <= 1000 else p["assembly_high"])
-        + 4 * p["corner"]
-        + perimeter * p["rubber"]
-    )
-    return round(per_facade * count, 2)
+    return round(profile
+                 + w * h * glass_price
+                 + fittings_per_facade * fitting_price
+                 + (p["assembly_low"] if height_mm <= 1000 else p["assembly_high"])
+                 + 4 * p["corner"]
+                 + perimeter * p["rubber"], 2)
+
+
+def calc_usd(p, width_mm, height_mm, count, glass_price, fitting_price, fittings_per_facade, handle):
+    """Bir xil o'lchamli `count` ta fasad (eski API — saqlanadi)."""
+    return round(calc_facade(p, width_mm, height_mm, glass_price, fitting_price,
+                             fittings_per_facade, handle) * count, 2)
+
+
+def calc_total(p, facades, glass_price, fitting_price):
+    """Har bir fasad o'lchami va furnitura soni alohida bo'lgani uchun yig'indi.
+    facades: [(eni_mm, balandlik_mm, handle, furnitura_soni), ...] —
+    handle None | 'chap' | 'ong'."""
+    return round(sum(calc_facade(p, w, h, glass_price, fitting_price, fit, handle)
+                     for w, h, handle, fit in facades), 2)
 
 
 def calc_sum(p, usd, rate, delivery):
@@ -74,4 +86,18 @@ if __name__ == "__main__":
     # 1001 mm -> yig'ish 8
     assert calc_usd(p, 500, 1001, 1, 20, 3, 0, None) - calc_usd(p, 500, 1000, 1, 20, 3, 0, None) > 2
     assert calc_sum(p, 70.2, 12700, True) == 991_540
+    # har xil o'lchamli fasadlar: 1800x900 + 2000x1000 (hammasi ruchkasiz, 2 dona furnitura) — yig'indi
+    assert calc_total(p, [(900, 1800, None, 2), (1000, 2000, None, 2)], 20, 5.5) == \
+        round(calc_facade(p, 900, 1800, 20, 5.5, 2, None)
+              + calc_facade(p, 1000, 2000, 20, 5.5, 2, None), 2)
+    # bir xil o'lchamli `count` ta fasad = calc_total bilan bir xil natija
+    assert calc_usd(p, 1000, 1000, 3, 20, 5.5, 2, None) == \
+        calc_total(p, [(1000, 1000, None, 2)] * 3, 20, 5.5)
+    # ruchka faqat bitta fasadda bo'lsa — narx oshadi
+    assert calc_total(p, [(1000, 1000, "chap", 2), (1000, 1000, None, 2)], 20, 5.5) > \
+        calc_total(p, [(1000, 1000, None, 2), (1000, 1000, None, 2)], 20, 5.5)
+    # furnitura soni har bir fasad alohida: 0 dona bo'lsa arzonroq
+    assert calc_total(p, [(1000, 1000, None, 0)], 20, 5.5) < \
+        calc_total(p, [(1000, 1000, None, 2)], 20, 5.5)
     print("ok")
+
